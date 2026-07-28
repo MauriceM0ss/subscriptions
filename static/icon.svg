@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- Full-bleed background so the icon works as a maskable PWA icon. -->
+  <rect width="512" height="512" fill="#0a0f1d"/>
+  <!-- Recurring / renewal loop, centred within the maskable safe zone. -->
+  <g fill="none" stroke="#3b82f6" stroke-width="34" stroke-linecap="round">
+    <path d="M150 256a106 106 0 0 1 182-72"/>
+    <path d="M362 256a106 106 0 0 1-182 72"/>
+  </g>
+  <path d="M318 132l24 74-76-14z" fill="#3b82f6"/>
+  <path d="M194 380l-24-74 76 14z" fill="#3b82f6"/>
+</svg>

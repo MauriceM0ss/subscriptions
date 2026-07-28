@@ -1,0 +1,515 @@
+"""Subscriptions — a self-hosted personal subscription tracker.
+
+Add the services you pay for, group them by category in the sidebar, and see
+what they cost per month / per year and how much you've spent so far.
+
+Domain logic is split across focused modules:
+
+    config         env-derived settings + shared primitives (now_iso, today)
+    database       SQLite connection, schema/migrations, key/value settings
+    subscriptions  cost & renewal derivation (monthly/yearly/total-spent)
+"""
+import io
+import json
+import hmac
+import time
+import logging
+import sqlite3
+from urllib.parse import urlparse
+from pathlib import Path
+
+from flask import Flask, render_template, request, jsonify, send_file, Response
+
+import config
+import database
+import subscriptions
+
+# ── Back-compat / test facade: expose the most-used names at module scope. ─────
+from config import now_iso
+from database import db, init_db, get_setting, set_setting, get_currency
+
+app = Flask(__name__)
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s %(message)s")
+log = logging.getLogger("subscriptions")
+
+_STATIC = Path(__file__).parent / "static"
+_MUTATING = {"POST", "PUT", "PATCH", "DELETE"}
+
+
+@app.route("/healthz")
+def healthz():
+    """Liveness/readiness probe for the container healthcheck. No auth required."""
+    try:
+        with db() as conn:
+            conn.execute("SELECT 1")
+        return jsonify({"status": "ok"})
+    except Exception as e:                                    # noqa: BLE001
+        log.error("Healthcheck DB error: %s", e)
+        return jsonify({"status": "error"}), 503
+
+
+@app.before_request
+def _security_gate():
+    """Optional Basic auth + a lightweight CSRF (same-origin) check.
+
+    Auth is off unless AUTH_USER/AUTH_PASSWORD are set, preserving the open
+    localhost default. The CSRF check rejects state-changing requests whose
+    Origin/Referer is a different site — a browser always sends one on a
+    cross-site request, while non-browser clients (curl) send neither.
+    """
+    if request.path == "/healthz":       # probe must work without creds/origin
+        return None
+    request._started = time.monotonic()
+
+    if config.AUTH_USER and config.AUTH_PASSWORD:
+        auth = request.authorization
+        ok = (auth and auth.type == "basic"
+              and hmac.compare_digest(auth.username or "", config.AUTH_USER)
+              and hmac.compare_digest(auth.password or "", config.AUTH_PASSWORD))
+        if not ok:
+            return Response("Authentication required.", 401,
+                            {"WWW-Authenticate": 'Basic realm="Subscriptions"'})
+
+    if request.method in _MUTATING:
+        source = request.headers.get("Origin") or request.headers.get("Referer")
+        if source and urlparse(source).netloc != request.host:
+            return jsonify({"error": "Cross-origin request blocked."}), 403
+
+
+@app.after_request
+def _access_log(resp):
+    if request.path == "/healthz":
+        return resp
+    started = getattr(request, "_started", None)
+    ms = f"{(time.monotonic() - started) * 1000:.0f}ms" if started else "-"
+    log.info("%s %s -> %s (%s)", request.method, request.full_path.rstrip("?"),
+             resp.status_code, ms)
+    return resp
+
+
+@app.errorhandler(Exception)
+def _log_unhandled(e):
+    from werkzeug.exceptions import HTTPException
+    if isinstance(e, HTTPException):
+        return e
+    log.exception("Unhandled error on %s %s", request.method, request.path)
+    return jsonify({"error": "Internal server error."}), 500
+
+
+# ── Pages ─────────────────────────────────────────────────────────────────────
+@app.route("/")
+def index():
+    return render_template("app.html")
+
+
+@app.route("/manifest.webmanifest")
+def web_manifest():
+    return send_file(_STATIC / "manifest.webmanifest", mimetype="application/manifest+json")
+
+
+@app.route("/sw.js")
+def service_worker():
+    resp = send_file(_STATIC / "sw.js", mimetype="application/javascript")
+    resp.headers["Service-Worker-Allowed"] = "/"
+    resp.headers["Cache-Control"] = "no-cache"
+    return resp
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+def _periods_prices(conn):
+    """All activation periods and price points, grouped by subscription id and
+    parsed into the (date, …) tuples that subscriptions.enrich expects."""
+    periods, prices = {}, {}
+    for r in conn.execute("SELECT sub_id, started_on, ended_on FROM activation_periods"):
+        periods.setdefault(r["sub_id"], []).append(
+            (subscriptions.parse_date(r["started_on"]), subscriptions.parse_date(r["ended_on"])))
+    for r in conn.execute("SELECT sub_id, amount, changed_on FROM price_history ORDER BY changed_on"):
+        prices.setdefault(r["sub_id"], []).append(
+            (subscriptions.parse_date(r["changed_on"]), float(r["amount"])))
+    return periods, prices
+
+
+def _all_enriched(conn, today, where="", params=()):
+    rows = conn.execute(
+        "SELECT sub.*, c.name AS category_name FROM subscriptions sub "
+        "LEFT JOIN categories c ON c.id = sub.category_id "
+        + where + " ORDER BY sub.sort_order, sub.name COLLATE NOCASE", params).fetchall()
+    periods, prices = _periods_prices(conn)
+    return [subscriptions.enrich(r, today, periods.get(r["id"], []), prices.get(r["id"], []))
+            for r in rows]
+
+
+def _clean_payload(d, partial):
+    """Validate an incoming subscription body. Returns (cleaned, error)."""
+    out = {}
+    if "name" in d or not partial:
+        name = (d.get("name") or "").strip()
+        if not name:
+            return None, "Name is required."
+        out["name"] = name
+    if "category_id" in d or not partial:
+        try:
+            out["category_id"] = int(d["category_id"])
+        except (KeyError, TypeError, ValueError):
+            return None, "Pick a category."
+    if "billing_cycle" in d or not partial:
+        cyc = (d.get("billing_cycle") or "monthly").strip().lower()
+        if cyc not in config.BILLING_CYCLES:
+            return None, "Billing cycle must be monthly or yearly."
+        out["billing_cycle"] = cyc
+    if "amount" in d or not partial:
+        try:
+            amt = float(d.get("amount") or 0)
+        except (TypeError, ValueError):
+            return None, "Amount must be a number."
+        if amt < 0:
+            return None, "Amount can't be negative."
+        out["amount"] = round(amt, 2)
+    for field in ("start_date", "renew_date"):
+        if field in d:
+            v = (d.get(field) or "").strip()
+            if v and subscriptions.parse_date(v) is None:
+                return None, f"Invalid {field.replace('_', ' ')} (use YYYY-MM-DD)."
+            out[field] = v
+    if "payment_method" in d or not partial:
+        pm = (d.get("payment_method") or "").strip()
+        if pm and pm not in config.PAYMENT_METHODS:
+            return None, "Unknown payment method."
+        out["payment_method"] = pm
+    if "necessity" in d or not partial:
+        nec = (d.get("necessity") or "").strip() or config.DEFAULT_NECESSITY
+        if nec not in config.NECESSITIES:
+            return None, "Unknown necessity."
+        out["necessity"] = nec
+    if "active" in d:
+        out["active"] = 1 if d.get("active") else 0
+    if "notes" in d:
+        out["notes"] = (d.get("notes") or "").strip()
+    return out, None
+
+
+# ── API: sidebar tree ─────────────────────────────────────────────────────────
+@app.route("/api/tree")
+def api_tree():
+    today = config.today()
+    with db() as conn:
+        cats = conn.execute("SELECT * FROM categories ORDER BY sort_order, name").fetchall()
+        subs = _all_enriched(conn, today)
+
+    by_cat = {}
+    for s in subs:
+        by_cat.setdefault(s["category_id"], []).append({
+            "id": s["id"], "name": s["name"],
+            "category_id": s["category_id"], "active": s["active"],
+            "monthly_cost": s["monthly_cost"], "days_until_renew": s["days_until_renew"],
+        })
+    tree = []
+    for c in cats:
+        csubs = sorted(by_cat.get(c["id"], []), key=lambda x: (x["name"] or "").lower())
+        tree.append({
+            "id": c["id"], "name": c["name"], "subs": csubs, "count": len(csubs),
+            "monthly": round(sum(x["monthly_cost"] for x in csubs if x["active"]), 2),
+        })
+
+    active = [s for s in subs if s["active"]]
+    upcoming = [s for s in subs if s["active"] and s["days_until_renew"] is not None
+                and 0 <= s["days_until_renew"] <= config.UPCOMING_DAYS]
+    return jsonify({
+        "tree": tree,
+        "currency": get_currency(),
+        "totals": {
+            "all": len(subs),
+            "active": len(active),
+            "upcoming": len(upcoming),
+            "monthly_total": round(sum(s["monthly_cost"] for s in active), 2),
+            "yearly_total": round(sum(s["yearly_cost"] for s in active), 2),
+        },
+    })
+
+
+# ── API: overview dashboard ───────────────────────────────────────────────────
+@app.route("/api/overview")
+def api_overview():
+    today = config.today()
+    with db() as conn:
+        subs = _all_enriched(conn, today)
+    active = [s for s in subs if s["active"]]
+
+    by_cat = {}
+    for s in active:
+        key = s.get("category_name") or "Uncategorized"
+        by_cat[key] = round(by_cat.get(key, 0) + s["monthly_cost"], 2)
+
+    upcoming = sorted(
+        [s for s in active if s["days_until_renew"] is not None],
+        key=lambda s: s["days_until_renew"])[:12]
+    return jsonify({
+        "currency": get_currency(),
+        "monthly_total": round(sum(s["monthly_cost"] for s in active), 2),
+        "yearly_total": round(sum(s["yearly_cost"] for s in active), 2),
+        "total_spent": round(sum(s["total_spent"] for s in subs), 2),
+        "active_count": len(active),
+        "total_count": len(subs),
+        "by_category": sorted(
+            [{"name": k, "monthly": v} for k, v in by_cat.items()],
+            key=lambda x: -x["monthly"]),
+        "upcoming": [{
+            "id": s["id"], "name": s["name"],
+            "category_name": s.get("category_name"),
+            "amount": s["amount"], "billing_cycle": s["billing_cycle"],
+            "next_renewal": s["next_renewal"], "days_until_renew": s["days_until_renew"],
+        } for s in upcoming],
+    })
+
+
+# ── API: subscriptions ────────────────────────────────────────────────────────
+@app.route("/api/subscriptions")
+def api_subs_list():
+    scope = request.args.get("scope", "all")
+    sid = request.args.get("id")
+    today = config.today()
+    where, params = "", ()
+    if scope == "category":
+        where, params = "WHERE sub.category_id = ?", (sid,)
+    with db() as conn:
+        items = _all_enriched(conn, today, where, params)
+    if scope == "upcoming":
+        items = [s for s in items if s["days_until_renew"] is not None
+                 and 0 <= s["days_until_renew"] <= config.UPCOMING_DAYS]
+        items.sort(key=lambda s: s["days_until_renew"])
+    return jsonify({"items": items, "currency": get_currency()})
+
+
+@app.route("/api/subscriptions/<int:sid>")
+def api_sub_get(sid):
+    with db() as conn:
+        r = conn.execute(
+            "SELECT sub.*, c.name AS category_name FROM subscriptions sub "
+            "LEFT JOIN categories c ON c.id = sub.category_id WHERE sub.id=?", (sid,)).fetchone()
+        if not r:
+            return jsonify({"error": "Subscription not found."}), 404
+        price_rows = conn.execute(
+            "SELECT amount, billing_cycle, changed_on, note FROM price_history "
+            "WHERE sub_id=? ORDER BY changed_on, id", (sid,)).fetchall()
+        period_rows = conn.execute(
+            "SELECT started_on, ended_on FROM activation_periods "
+            "WHERE sub_id=? ORDER BY started_on, id", (sid,)).fetchall()
+    periods = [(subscriptions.parse_date(p["started_on"]), subscriptions.parse_date(p["ended_on"]))
+               for p in period_rows]
+    prices = [(subscriptions.parse_date(p["changed_on"]), float(p["amount"])) for p in price_rows]
+    out = subscriptions.enrich(r, config.today(), periods, prices)
+    out["currency"] = get_currency()
+    out["price_history"] = [dict(p) for p in price_rows]
+    out["periods"] = [dict(p) for p in period_rows]
+    return jsonify(out)
+
+
+@app.route("/api/subscriptions", methods=["POST"])
+def api_sub_create():
+    d = request.get_json(force=True)
+    clean, err = _clean_payload(d, partial=False)
+    if err:
+        return jsonify({"error": err}), 400
+    with db() as conn:
+        if not conn.execute("SELECT 1 FROM categories WHERE id=?", (clean["category_id"],)).fetchone():
+            return jsonify({"error": "That category no longer exists."}), 400
+        # Default the renewal date to start + one cycle when it's left blank.
+        if not clean.get("renew_date") and clean.get("start_date"):
+            sd = subscriptions.parse_date(clean["start_date"])
+            if sd:
+                clean["renew_date"] = subscriptions.add_cycle(sd, clean["billing_cycle"]).isoformat()
+        cur = conn.execute(
+            "INSERT INTO subscriptions (category_id, name, billing_cycle, amount, "
+            "start_date, renew_date, active, payment_method, necessity, notes, "
+            "created_at, sort_order) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
+            "        (SELECT COALESCE(MAX(sort_order),0)+1 FROM subscriptions))",
+            (clean["category_id"], clean["name"],
+             clean["billing_cycle"], clean["amount"], clean.get("start_date", ""),
+             clean.get("renew_date", ""), clean.get("active", 1),
+             clean.get("payment_method", ""), clean.get("necessity", config.DEFAULT_NECESSITY),
+             clean.get("notes", ""), now_iso()))
+        sid = cur.lastrowid
+        # Seed the starting price and (if active) open the first activation period.
+        anchor = clean.get("start_date") or config.today().isoformat()
+        conn.execute(
+            "INSERT INTO price_history (sub_id, amount, billing_cycle, changed_on, note) "
+            "VALUES (?, ?, ?, ?, 'created')",
+            (sid, clean["amount"], clean["billing_cycle"], anchor))
+        if clean.get("active", 1):
+            conn.execute(
+                "INSERT INTO activation_periods (sub_id, started_on, ended_on) VALUES (?, ?, NULL)",
+                (sid, anchor))
+    return jsonify({"id": sid}), 201
+
+
+@app.route("/api/subscriptions/<int:sid>", methods=["PUT"])
+def api_sub_update(sid):
+    d = request.get_json(force=True)
+    clean, err = _clean_payload(d, partial=True)
+    if err:
+        return jsonify({"error": err}), 400
+    if not clean:
+        return jsonify({"error": "Nothing to update."}), 400
+    with db() as conn:
+        old = conn.execute(
+            "SELECT amount, billing_cycle, active FROM subscriptions WHERE id=?", (sid,)).fetchone()
+        if not old:
+            return jsonify({"error": "Subscription not found."}), 404
+        if "category_id" in clean and not conn.execute(
+                "SELECT 1 FROM categories WHERE id=?", (clean["category_id"],)).fetchone():
+            return jsonify({"error": "That category no longer exists."}), 400
+        cols = ", ".join(f"{k}=?" for k in clean)
+        conn.execute(f"UPDATE subscriptions SET {cols} WHERE id=?", list(clean.values()) + [sid])
+
+        today_iso = config.today().isoformat()
+        # Auto-log a price change whenever the amount or the billing cycle moves.
+        new_amt = clean.get("amount", old["amount"])
+        new_cyc = clean.get("billing_cycle", old["billing_cycle"])
+        if new_amt != old["amount"] or new_cyc != old["billing_cycle"]:
+            conn.execute(
+                "INSERT INTO price_history (sub_id, amount, billing_cycle, changed_on, note) "
+                "VALUES (?, ?, ?, ?, '')", (sid, new_amt, new_cyc, today_iso))
+        # Toggling active opens a new on-period or closes the current one.
+        if "active" in clean and clean["active"] != old["active"]:
+            if clean["active"]:
+                open_period = conn.execute(
+                    "SELECT 1 FROM activation_periods WHERE sub_id=? AND ended_on IS NULL",
+                    (sid,)).fetchone()
+                if not open_period:
+                    conn.execute(
+                        "INSERT INTO activation_periods (sub_id, started_on, ended_on) "
+                        "VALUES (?, ?, NULL)", (sid, today_iso))
+            else:
+                conn.execute(
+                    "UPDATE activation_periods SET ended_on=? "
+                    "WHERE sub_id=? AND ended_on IS NULL", (today_iso, sid))
+    return jsonify({"ok": True})
+
+
+@app.route("/api/subscriptions/<int:sid>", methods=["DELETE"])
+def api_sub_delete(sid):
+    with db() as conn:
+        conn.execute("DELETE FROM subscriptions WHERE id=?", (sid,))
+    return jsonify({"ok": True})
+
+
+# ── API: categories ───────────────────────────────────────────────────────────
+@app.route("/api/categories", methods=["POST"])
+def api_category_create():
+    name = (request.get_json(force=True).get("name") or "").strip()
+    if not name:
+        return jsonify({"error": "Name required."}), 400
+    with db() as conn:
+        try:
+            cur = conn.execute(
+                "INSERT INTO categories (name, sort_order) VALUES "
+                "(?, (SELECT COALESCE(MAX(sort_order),0)+1 FROM categories))", (name,))
+        except sqlite3.IntegrityError:
+            return jsonify({"error": "That category already exists."}), 400
+    return jsonify({"id": cur.lastrowid, "name": name})
+
+
+@app.route("/api/categories/<int:cid>", methods=["PUT"])
+def api_category_update(cid):
+    name = (request.get_json(force=True).get("name") or "").strip()
+    if not name:
+        return jsonify({"error": "Name required."}), 400
+    with db() as conn:
+        try:
+            conn.execute("UPDATE categories SET name=? WHERE id=?", (name, cid))
+        except sqlite3.IntegrityError:
+            return jsonify({"error": "That category already exists."}), 400
+    return jsonify({"ok": True})
+
+
+UNCATEGORIZED = "Uncategorized"
+
+
+def _uncategorized_id(conn):
+    """Id of the 'Uncategorized' bucket, created on demand."""
+    r = conn.execute("SELECT id FROM categories WHERE name=?", (UNCATEGORIZED,)).fetchone()
+    if r:
+        return r["id"]
+    cur = conn.execute(
+        "INSERT INTO categories (name, sort_order) VALUES "
+        "(?, (SELECT COALESCE(MAX(sort_order),0)+1 FROM categories))", (UNCATEGORIZED,))
+    return cur.lastrowid
+
+
+@app.route("/api/categories/<int:cid>", methods=["DELETE"])
+def api_category_delete(cid):
+    with db() as conn:
+        row = conn.execute("SELECT name FROM categories WHERE id=?", (cid,)).fetchone()
+        if not row:
+            return jsonify({"ok": True})
+        # Move this category's subscriptions into the Uncategorized bucket rather
+        # than deleting them with the category. (Deleting the bucket itself just
+        # removes it and its subscriptions — there's nowhere else to move them.)
+        if row["name"] != UNCATEGORIZED:
+            unc_id = _uncategorized_id(conn)
+            conn.execute("UPDATE subscriptions SET category_id=? WHERE category_id=?", (unc_id, cid))
+        conn.execute("DELETE FROM categories WHERE id=?", (cid,))
+    return jsonify({"ok": True})
+
+
+# ── API: settings ─────────────────────────────────────────────────────────────
+@app.route("/api/settings", methods=["GET"])
+def api_settings_get():
+    return jsonify({"currency": get_currency(), "upcoming_days": config.UPCOMING_DAYS})
+
+
+@app.route("/api/settings", methods=["POST"])
+def api_settings_set():
+    d = request.get_json(force=True)
+    if "currency" in d:
+        cur = (str(d.get("currency") or "")).strip()[:4]
+        if not cur:
+            return jsonify({"error": "Currency symbol can't be empty."}), 400
+        set_setting("currency", cur)
+    return jsonify({"ok": True})
+
+
+# ── API: export + reset ───────────────────────────────────────────────────────
+@app.route("/api/export")
+def api_export():
+    today = config.today()
+    with db() as conn:
+        cats = [dict(r) for r in conn.execute(
+            "SELECT * FROM categories ORDER BY sort_order").fetchall()]
+        subs = _all_enriched(conn, today)
+        price_history = [dict(r) for r in conn.execute(
+            "SELECT * FROM price_history ORDER BY sub_id, changed_on, id").fetchall()]
+        periods = [dict(r) for r in conn.execute(
+            "SELECT * FROM activation_periods ORDER BY sub_id, started_on, id").fetchall()]
+    payload = json.dumps({
+        "exported_at": now_iso(),
+        "currency": get_currency(),
+        "categories": cats,
+        "subscriptions": subs,
+        "price_history": price_history,
+        "activation_periods": periods,
+    }, indent=2)
+    return send_file(io.BytesIO(payload.encode("utf-8")), as_attachment=True,
+                     download_name="subscriptions-export.json", mimetype="application/json")
+
+
+@app.route("/api/reset", methods=["POST"])
+def api_reset():
+    with db() as conn:
+        conn.execute("DELETE FROM subscriptions")
+        conn.execute("DELETE FROM categories")               # start clean…
+        conn.executemany(                                    # …then re-seed the defaults
+            "INSERT INTO categories (name, sort_order) VALUES (?, ?)",
+            [(name, i) for i, name in enumerate(config.SEED_CATEGORIES)])
+    return jsonify({"ok": True})
+
+
+init_db()
+
+if __name__ == "__main__":
+    import os
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))

@@ -1,0 +1,19 @@
+# Subscriptions — a personal subscription tracker.
+services:
+  subscriptions:
+    build: .
+    image: subscriptions:latest
+    container_name: subscriptions
+    restart: unless-stopped
+    ports:
+      - "8032:8080"          # http://localhost:8032
+    environment:
+      CURRENCY: "€"     # display symbol only (no conversion)
+      # Optional HTTP Basic auth — set BOTH to require a login:
+      # AUTH_USER: "me"
+      # AUTH_PASSWORD: "change-me"
+    volumes:
+      - subscriptions-data:/data
+
+volumes:
+  subscriptions-data:

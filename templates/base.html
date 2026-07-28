@@ -1,0 +1,705 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <title>{% block title %}Subscriptions{% endblock %}</title>
+  <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='favicon.svg') }}">
+  <!-- Apply the saved theme before the stylesheet paints, to avoid a flash. -->
+  <script>
+    (function () {
+      try {
+        var t = localStorage.getItem('subs-theme') || 'blue';
+        document.documentElement.setAttribute('data-theme', t);
+      } catch (e) { document.documentElement.setAttribute('data-theme', 'blue'); }
+    })();
+  </script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="apple-touch-icon" href="{{ url_for('static', filename='icon.svg') }}">
+  <meta name="theme-color" content="#05070e">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Subscriptions">
+</head>
+<body>
+
+  <!-- ── Header ─────────────────────────────────────────────────────────── -->
+  <header class="site-header">
+    <div class="header-left">
+      <button class="btn-icon btn-menu" id="btn-menu" aria-label="Toggle sidebar">☰</button>
+      <a href="/" class="logo"><span class="logo-text">Subscriptions</span></a>
+    </div>
+    <span class="header-title">Subscription Tracker</span>
+    <div class="header-actions">
+      <button class="btn-icon" id="btn-add" data-tip="Add a subscription" aria-label="Add a subscription">＋</button>
+      <button class="btn-icon" id="btn-help" data-tip="Help" aria-label="Help">?</button>
+      <button class="btn-icon" id="btn-settings" data-tip="Settings" aria-label="Settings">⚙</button>
+    </div>
+  </header>
+
+  <!-- ── Add / edit subscription modal ──────────────────────────────────── -->
+  <div class="modal-backdrop" id="sub-backdrop" hidden>
+    <div class="modal" role="dialog" aria-modal="true">
+      <h2 class="modal-title" id="sub-modal-title">Add a subscription</h2>
+      <input type="hidden" id="sub-id">
+      <div class="form-grid">
+        <label class="field">Name
+          <input type="text" id="sub-name" class="modal-input" placeholder="e.g. Netflix Premium" autocomplete="off">
+        </label>
+        <label class="field">Category
+          <select id="sub-category" class="modal-input"></select>
+        </label>
+        <label class="field">Billing cycle
+          <select id="sub-cycle" class="modal-input">
+            <option value="monthly">Monthly</option>
+            <option value="yearly">Yearly</option>
+          </select>
+        </label>
+        <label class="field">
+          <span class="field-cap">Amount per <span id="sub-cycle-word">month</span> (<span class="cur-sym">€</span>)</span>
+          <input type="number" id="sub-amount" class="modal-input" min="0" step="0.01" placeholder="0.00">
+        </label>
+        <label class="field">Payment method
+          <select id="sub-payment" class="modal-input">
+            <option value="">— none —</option>
+            <option value="Credit Card">Credit Card</option>
+            <option value="PayPal">PayPal</option>
+            <option value="iDeal">iDeal</option>
+          </select>
+        </label>
+        <label class="field">Necessity
+          <select id="sub-necessity" class="modal-input">
+            <option value="Nice to Have">Nice to Have</option>
+            <option value="Important">Important</option>
+            <option value="Critical">Critical</option>
+          </select>
+        </label>
+        <label class="field">Start date
+          <input type="date" id="sub-start" class="modal-input">
+        </label>
+        <label class="field">Renew date
+          <input type="date" id="sub-renew" class="modal-input">
+          <span class="field-hint">Leave blank to auto-set to start&nbsp;+&nbsp;one cycle.</span>
+        </label>
+        <label class="field field--full">Notes
+          <textarea id="sub-notes" class="modal-input" rows="2" placeholder="Optional"></textarea>
+        </label>
+        <label class="toggle-row field--full" id="sub-active-row">
+          <input type="checkbox" id="sub-active" checked>
+          <span>Active (counts towards your monthly / yearly totals)</span>
+        </label>
+      </div>
+      <p class="modal-error" id="sub-error" hidden></p>
+      <div class="modal-actions">
+        <button class="btn-danger-sm" id="sub-delete" hidden>Delete</button>
+        <span style="flex:1"></span>
+        <button class="btn-secondary" id="sub-cancel">Cancel</button>
+        <button class="btn-primary" id="sub-save">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Settings modal ─────────────────────────────────────────────────── -->
+  <div class="modal-backdrop" id="settings-backdrop" hidden>
+    <div class="modal settings-modal" role="dialog" aria-modal="true">
+      <h2 class="modal-title">Settings</h2>
+
+      <div class="settings-tabs" role="tablist">
+        <button class="settings-tab is-active" data-tab="categories" role="tab">Categories</button>
+        <button class="settings-tab" data-tab="prefs" role="tab">Preferences</button>
+        <button class="settings-tab" data-tab="data" role="tab">Data</button>
+      </div>
+
+      <!-- ── Tab: Categories ─────────────────────────────────────────────── -->
+      <div class="settings-panel" data-panel="categories">
+        <div class="settings-section">
+          <h3 class="settings-section-title">Categories</h3>
+          <p class="settings-desc">These group your subscriptions in the sidebar. Deleting a category
+            moves its subscriptions to an “Uncategorized” bucket.</p>
+          <div id="manage-list"></div>
+          <div class="addfeed-row">
+            <input type="text" id="newcat-name" class="modal-input" placeholder="New category name">
+            <button class="btn-secondary" id="newcat-add">Add</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── Tab: Preferences ────────────────────────────────────────────── -->
+      <div class="settings-panel" data-panel="prefs" hidden>
+        <div class="settings-section">
+          <h3 class="settings-section-title">Appearance</h3>
+          <label class="field">Theme
+            <select id="theme-select" class="modal-input">
+              <option value="blue">Deep blue — dark</option>
+              <option value="neon">Terminal — dark green</option>
+              <option value="light">Light</option>
+            </select>
+          </label>
+          <p class="settings-desc">Switches the colour scheme instantly. Your choice is remembered in
+            this browser.</p>
+        </div>
+        <div class="settings-section">
+          <h3 class="settings-section-title">Currency</h3>
+          <label class="field">Symbol shown next to amounts
+            <input type="text" id="currency-input" class="modal-input" maxlength="4" style="max-width:120px">
+          </label>
+          <p class="settings-desc">Display only — no conversion happens.
+            <span id="currency-status" class="settings-status"></span></p>
+        </div>
+      </div>
+
+      <!-- ── Tab: Data ───────────────────────────────────────────────────── -->
+      <div class="settings-panel" data-panel="data" hidden>
+        <div class="settings-section">
+          <h3 class="settings-section-title">Export</h3>
+          <p class="settings-desc">Download all your categories and subscriptions (with computed
+            costs) as a JSON file.</p>
+          <div class="import-row">
+            <a class="btn-secondary" href="{{ url_for('api_export') }}">⬇ Export JSON</a>
+          </div>
+        </div>
+        <div class="settings-section settings-section--danger">
+          <h3 class="settings-section-title">Reset</h3>
+          <p class="settings-desc">Delete every subscription and category, then restore the starter
+            categories. Cannot be undone.</p>
+          <button class="btn-danger-sm" id="reset-open">Reset everything…</button>
+          <div id="reset-confirm" hidden>
+            <p class="settings-desc">Type <strong>RESET</strong> to confirm:</p>
+            <div class="import-row" style="margin-top:6px">
+              <input type="text" id="reset-input" class="modal-input" placeholder="RESET" style="max-width:140px">
+              <button class="btn-danger-sm" id="reset-go">Delete everything</button>
+            </div>
+            <span id="reset-status" class="settings-status"></span>
+          </div>
+        </div>
+      </div>
+
+      <div class="modal-actions">
+        <button class="btn-secondary" id="settings-close">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Help modal ─────────────────────────────────────────────────────── -->
+  <div class="modal-backdrop" id="help-backdrop" hidden>
+    <div class="modal" role="dialog" aria-modal="true">
+      <h2 class="modal-title">Help</h2>
+      <div class="settings-section">
+        <ul class="help-points">
+          <li><strong>＋ Add</strong> a subscription from the header — pick a category, a billing cycle
+            (monthly or yearly) and the price. The other figures are worked out for you.</li>
+          <li><strong>Monthly &amp; yearly</strong> costs are derived from the one price you enter, so
+            they always agree.</li>
+          <li><strong>Total spent</strong> is estimated from the start date and billing cycle — how much
+            this subscription has cost you so far.</li>
+          <li><strong>Overview</strong> (top of the sidebar) totals your active spend and lists renewals
+            coming up in the next {{ ' ' }}<span id="help-upcoming-days">30</span> days.</li>
+          <li>Subscriptions are grouped by <strong>category</strong> in the sidebar; click one to see its
+            details, then Edit or Delete.</li>
+          <li>Flip a subscription <strong>Enable / Disable</strong> from its page to pause it — great for
+            services you only switch on for a month. It stops counting toward your totals, and
+            “total spent” only ever counts the months it was actually on.</li>
+          <li>Change a price and the old one is kept: each subscription page shows its
+            <strong>price history</strong> over time.</li>
+        </ul>
+      </div>
+      <div class="modal-actions">
+        <button class="btn-secondary" id="help-close">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── App body ───────────────────────────────────────────────────────── -->
+  <div class="app-body">
+    <div class="nav-backdrop" id="nav-backdrop" hidden></div>
+    <nav class="nav-sidebar" id="nav-sidebar" aria-label="Subscriptions">
+      <div class="nav-quick" id="nav-quick"></div>
+      <div class="nav-tree" id="nav-tree"><span class="nav-tree-loading">Loading…</span></div>
+    </nav>
+    <main class="app-main">{% block content %}{% endblock %}</main>
+  </div>
+
+  <!-- ── Status bar ─────────────────────────────────────────────────────── -->
+  <footer class="app-statusbar">
+    <span class="status-item"><span class="status-dot"></span><span id="status-text">—</span></span>
+  </footer>
+
+  <script>
+  // Shared state: the sidebar tree + currency, loaded from /api/tree.
+  let TREE = { tree: [], totals: {} };
+  let CURRENCY = '€';
+  const COLLAPSE_KEY = 'subs-collapsed';
+  let collapsed = new Set(JSON.parse(localStorage.getItem(COLLAPSE_KEY) || '[]'));
+
+  function escHtml(s) {
+    return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;')
+      .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+  function fmtMoney(n) {
+    const v = Number(n || 0);
+    return CURRENCY + v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  }
+  function fmtDate(iso) {
+    if (!iso) return '—';
+    const d = new Date(iso + 'T00:00:00');
+    return isNaN(d) ? '—' : d.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
+  }
+  // Human countdown for a renewal that is `n` days away (n<0 = overdue).
+  function renewLabel(n) {
+    if (n === null || n === undefined) return 'No date';
+    if (n < 0) return `overdue ${-n}d`;
+    if (n === 0) return 'today';
+    if (n === 1) return 'tomorrow';
+    return `in ${n}d`;
+  }
+  function renewClass(n) {
+    if (n === null || n === undefined) return '';
+    if (n < 0) return 'is-overdue';
+    if (n <= 7) return 'is-soon';
+    return '';
+  }
+  window.escHtml = escHtml; window.fmtMoney = fmtMoney; window.fmtDate = fmtDate;
+  window.renewLabel = renewLabel; window.renewClass = renewClass;
+
+  // ── Theme switching ──────────────────────────────────────────────────────
+  const THEME_KEY = 'subs-theme';
+  const THEME_BG = { neon: '#07090b', blue: '#05070e', light: '#eef1f6' };
+  function currentTheme() { return localStorage.getItem(THEME_KEY) || 'blue'; }
+  function applyTheme(t) {
+    if (!THEME_BG[t]) t = 'blue';
+    document.documentElement.setAttribute('data-theme', t);
+    try { localStorage.setItem(THEME_KEY, t); } catch (e) {}
+    const meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) meta.setAttribute('content', THEME_BG[t]);
+    const sel = document.getElementById('theme-select');
+    if (sel) sel.value = t;
+  }
+  applyTheme(currentTheme());
+  document.getElementById('theme-select').addEventListener('change', e => applyTheme(e.target.value));
+
+  // ── Themed dialogs (promise-based confirm / prompt / alert) ───────────────
+  function appDialog(o) {
+    o = Object.assign({ kind: 'confirm', title: '', message: '', confirmLabel: 'OK',
+      cancelLabel: 'Cancel', danger: false, defaultValue: '', placeholder: '' }, o);
+    const cancelVal = o.kind === 'prompt' ? null : (o.kind === 'alert' ? undefined : false);
+    return new Promise(resolve => {
+      const prevFocus = document.activeElement;
+      const backdrop = document.createElement('div');
+      backdrop.className = 'modal-backdrop app-dialog-backdrop';
+      const modal = document.createElement('div');
+      modal.className = 'modal app-dialog';
+      modal.setAttribute('role', 'dialog'); modal.setAttribute('aria-modal', 'true');
+      if (o.title) { const h = document.createElement('h2'); h.className = 'modal-title'; h.textContent = o.title; modal.appendChild(h); }
+      if (o.message) { const p = document.createElement('p'); p.className = 'app-dialog-msg'; p.textContent = o.message; modal.appendChild(p); }
+      let input = null;
+      const finish = val => {
+        document.removeEventListener('keydown', onKey, true);
+        backdrop.remove();
+        if (prevFocus && prevFocus.focus) { try { prevFocus.focus(); } catch (e) {} }
+        resolve(val);
+      };
+      if (o.kind === 'prompt') {
+        input = document.createElement('input');
+        input.type = 'text'; input.className = 'modal-input';
+        input.value = o.defaultValue; input.placeholder = o.placeholder;
+        input.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); finish(input.value); } });
+        modal.appendChild(input);
+      }
+      const actions = document.createElement('div'); actions.className = 'modal-actions';
+      let cancelBtn = null;
+      if (o.kind !== 'alert') {
+        cancelBtn = document.createElement('button');
+        cancelBtn.type = 'button'; cancelBtn.className = 'btn-secondary';
+        cancelBtn.textContent = o.cancelLabel;
+        cancelBtn.addEventListener('click', () => finish(cancelVal));
+        actions.appendChild(cancelBtn);
+      }
+      const okBtn = document.createElement('button');
+      okBtn.type = 'button';
+      okBtn.className = o.danger ? 'btn-danger-sm' : 'btn-primary';
+      okBtn.textContent = o.confirmLabel;
+      okBtn.addEventListener('click', () => finish(o.kind === 'prompt' ? input.value : (o.kind === 'alert' ? undefined : true)));
+      actions.appendChild(okBtn);
+      modal.appendChild(actions);
+      backdrop.appendChild(modal);
+      backdrop.addEventListener('mousedown', e => { if (e.target === backdrop) finish(cancelVal); });
+      const onKey = e => { if (e.key === 'Escape') { e.preventDefault(); e.stopImmediatePropagation(); finish(cancelVal); } };
+      document.addEventListener('keydown', onKey, true);
+      document.body.appendChild(backdrop);
+      (input || (o.danger && cancelBtn) || okBtn).focus();
+      if (input) input.select();
+    });
+  }
+  const confirmDialog = o => appDialog(Object.assign({ kind: 'confirm', title: 'Confirm', confirmLabel: 'Confirm' }, o));
+  const promptDialog  = o => appDialog(Object.assign({ kind: 'prompt', confirmLabel: 'Save' }, o));
+  const alertDialog   = o => appDialog(Object.assign({ kind: 'alert', title: 'Notice', confirmLabel: 'OK' }, o));
+  window.confirmDialog = confirmDialog; window.alertDialog = alertDialog;
+
+  // ── PWA service worker ────────────────────────────────────────────────────
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch(() => {}));
+  }
+
+  // ── Sidebar toggle: drawer on mobile, collapse on desktop ─────────────────
+  const sidebarEl = document.getElementById('nav-sidebar');
+  const navBackdrop = document.getElementById('nav-backdrop');
+  const isMobile = () => window.matchMedia('(max-width: 760px)').matches;
+  function openSidebar() { sidebarEl.classList.add('open'); navBackdrop.hidden = false; }
+  window.closeSidebar = function () { sidebarEl.classList.remove('open'); navBackdrop.hidden = true; };
+  document.getElementById('btn-menu').addEventListener('click', () => {
+    if (isMobile()) { sidebarEl.classList.contains('open') ? window.closeSidebar() : openSidebar(); }
+    else { document.body.classList.toggle('nav-collapsed'); }
+  });
+  navBackdrop.addEventListener('click', window.closeSidebar);
+  window.addEventListener('resize', () => { if (!isMobile()) window.closeSidebar(); });
+
+  // ── Sidebar tree ──────────────────────────────────────────────────────────
+  async function loadTree() {
+    try { TREE = await (await fetch('/api/tree')).json(); } catch { return; }
+    if (TREE.currency) { CURRENCY = TREE.currency; syncCurrencySymbols(); }
+    renderQuick(); renderTree(); renderStatus();
+  }
+  window.loadTree = loadTree;
+
+  function renderQuick() {
+    const q = document.getElementById('nav-quick');
+    const t = TREE.totals || {};
+    const links = [
+      { scope: 'overview', icon: '▦', label: 'Overview', count: '' },
+      { scope: 'all', icon: '≣', label: 'All subscriptions', count: t.all || 0 },
+      { scope: 'upcoming', icon: '↻', label: 'Upcoming renewals', count: t.upcoming || 0 },
+    ];
+    q.innerHTML = '';
+    links.forEach(l => {
+      const el = document.createElement('div');
+      el.className = 'quick-link'; el.dataset.scope = l.scope;
+      el.innerHTML = `<span class="q-icon">${l.icon}</span><span>${l.label}</span>` +
+                     (l.count !== '' ? `<span class="q-count">${l.count}</span>` : '');
+      el.addEventListener('click', () => window.selectScope(l.scope, null, l.label));
+      q.appendChild(el);
+    });
+  }
+
+  function renderTree() {
+    const treeEl = document.getElementById('nav-tree');
+    treeEl.innerHTML = '';
+    if (!TREE.tree.length) {
+      treeEl.innerHTML = '<div class="nav-tree-loading">No categories yet.</div>';
+      return;
+    }
+    const ul = document.createElement('ul');
+    ul.className = 'tree-list';
+    for (const cat of TREE.tree) {
+      const open = !collapsed.has('c' + cat.id);
+      const catLi = document.createElement('li');
+      catLi.className = 'tree-cat-item';
+      const row = document.createElement('div');
+      row.className = 'tree-cat-row';
+      row.dataset.scope = 'category'; row.dataset.id = cat.id;
+      row.innerHTML =
+        `<span class="tree-arrow">${open ? '▾' : '▶'}</span>
+         <span class="tree-cat-label">${escHtml(cat.name)}</span>
+         ${cat.count ? `<span class="tree-count">${cat.count}</span>` : ''}`;
+      catLi.appendChild(row);
+
+      const subUl = document.createElement('ul');
+      subUl.className = 'tree-items-list';
+      if (!open) subUl.hidden = true;
+      for (const s of cat.subs) {
+        const fl = document.createElement('div');
+        fl.className = 'tree-item-link tree-feed-row' + (s.active ? '' : ' is-inactive');
+        fl.dataset.scope = 'subscription'; fl.dataset.id = s.id;
+        fl.title = fmtMoney(s.monthly_cost) + '/mo';
+        const badge = (s.days_until_renew !== null && s.days_until_renew !== undefined && s.days_until_renew <= 7)
+          ? `<span class="renew-dot ${renewClass(s.days_until_renew)}" title="Renews ${renewLabel(s.days_until_renew)}"></span>` : '';
+        fl.innerHTML =
+          `<span class="feed-name">${escHtml(s.name)}</span>${badge}` +
+          `<span class="q-count">${fmtMoney(s.monthly_cost)}</span>`;
+        fl.addEventListener('click', () => window.selectScope('subscription', s.id, s.name));
+        subUl.appendChild(fl);
+      }
+      if (!cat.subs.length) {
+        const empty = document.createElement('div');
+        empty.className = 'tree-empty';
+        empty.textContent = 'No subscriptions';
+        subUl.appendChild(empty);
+      }
+      catLi.appendChild(subUl);
+      ul.appendChild(catLi);
+
+      const arrow = row.querySelector('.tree-arrow');
+      const label = row.querySelector('.tree-cat-label');
+      const toggle = e => {
+        e.stopPropagation();
+        const opening = subUl.hidden;
+        subUl.hidden = !opening;
+        arrow.textContent = opening ? '▾' : '▶';
+        if (opening) collapsed.delete('c' + cat.id); else collapsed.add('c' + cat.id);
+        localStorage.setItem(COLLAPSE_KEY, JSON.stringify([...collapsed]));
+      };
+      arrow.addEventListener('click', toggle);
+      label.addEventListener('click', () => window.selectScope('category', cat.id, cat.name));
+    }
+    treeEl.appendChild(ul);
+    highlightActive();
+  }
+
+  function highlightActive() {
+    const cur = window.CURRENT || {};
+    document.querySelectorAll('.quick-link, .tree-item-link, .tree-cat-row')
+      .forEach(el => el.classList.remove('active'));
+    let sel;
+    if (['overview', 'all', 'upcoming'].includes(cur.scope))
+      sel = document.querySelector(`.quick-link[data-scope="${cur.scope}"]`);
+    else
+      sel = document.querySelector(`[data-scope="${cur.scope}"][data-id="${cur.id}"]`);
+    if (sel) sel.classList.add('active');
+  }
+  window.highlightActive = highlightActive;
+
+  function renderStatus() {
+    const t = TREE.totals || {};
+    document.getElementById('status-text').textContent =
+      `${t.active || 0} active · ${fmtMoney(t.monthly_total)}/mo · ${fmtMoney(t.yearly_total)}/yr`;
+  }
+
+  function syncCurrencySymbols() {
+    document.querySelectorAll('.cur-sym').forEach(el => el.textContent = CURRENCY);
+  }
+
+  // ── Add / edit subscription form ──────────────────────────────────────────
+  const subBackdrop = document.getElementById('sub-backdrop');
+  const subErr = document.getElementById('sub-error');
+  const cycleSel = document.getElementById('sub-cycle');
+  const cycleWord = document.getElementById('sub-cycle-word');
+  cycleSel.addEventListener('change', () => { cycleWord.textContent = cycleSel.value === 'yearly' ? 'year' : 'month'; });
+
+  function fillCategorySelect(selectedId) {
+    const sel = document.getElementById('sub-category');
+    sel.innerHTML = '';
+    for (const c of TREE.tree) {
+      const o = document.createElement('option');
+      o.value = c.id; o.textContent = c.name;
+      sel.appendChild(o);
+    }
+    if (selectedId != null) sel.value = selectedId;
+  }
+
+  // Open the form. Pass a subscription object to edit, or nothing to add.
+  window.openSubForm = async function (sub) {
+    subErr.hidden = true;
+    if (!TREE.tree.length) {
+      await alertDialog({ title: 'Add a category first',
+        message: 'Create at least one category in ⚙ Settings before adding a subscription.' });
+      return;
+    }
+    const editing = !!sub;
+    document.getElementById('sub-modal-title').textContent = editing ? 'Edit subscription' : 'Add a subscription';
+    document.getElementById('sub-id').value = editing ? sub.id : '';
+    document.getElementById('sub-name').value = editing ? (sub.name || '') : '';
+    cycleSel.value = editing ? (sub.billing_cycle || 'monthly') : 'monthly';
+    cycleWord.textContent = cycleSel.value === 'yearly' ? 'year' : 'month';
+    document.getElementById('sub-amount').value = editing && sub.amount != null ? sub.amount : '';
+    document.getElementById('sub-payment').value = editing ? (sub.payment_method || '') : '';
+    document.getElementById('sub-necessity').value = editing ? (sub.necessity || 'Important') : 'Important';
+    document.getElementById('sub-start').value = editing ? (sub.start_date || '') : '';
+    document.getElementById('sub-renew').value = editing ? (sub.renew_date || '') : '';
+    document.getElementById('sub-notes').value = editing ? (sub.notes || '') : '';
+    document.getElementById('sub-active').checked = editing ? !!sub.active : true;
+    document.getElementById('sub-active-row').hidden = !editing;
+    document.getElementById('sub-delete').hidden = !editing;
+    fillCategorySelect(editing ? sub.category_id : (window.CURRENT && window.CURRENT.scope === 'category' ? window.CURRENT.id : null));
+    syncCurrencySymbols();
+    subBackdrop.hidden = false;
+    document.getElementById('sub-name').focus();
+  };
+
+  document.getElementById('btn-add').addEventListener('click', () => window.openSubForm());
+  document.getElementById('sub-cancel').addEventListener('click', () => subBackdrop.hidden = true);
+  // Deliberately no click-outside / Escape close here: this is a data-entry form,
+  // so it only closes via Cancel, Save (on success) or Delete — never by a stray
+  // click on the backdrop, which would silently discard what you typed.
+
+  document.getElementById('sub-save').addEventListener('click', async () => {
+    const id = document.getElementById('sub-id').value;
+    const body = {
+      name: document.getElementById('sub-name').value.trim(),
+      category_id: Number(document.getElementById('sub-category').value),
+      billing_cycle: cycleSel.value,
+      amount: document.getElementById('sub-amount').value,
+      payment_method: document.getElementById('sub-payment').value,
+      necessity: document.getElementById('sub-necessity').value,
+      start_date: document.getElementById('sub-start').value,
+      renew_date: document.getElementById('sub-renew').value,
+      notes: document.getElementById('sub-notes').value.trim(),
+      active: document.getElementById('sub-active').checked,
+    };
+    if (!body.name) { subErr.textContent = 'Name is required.'; subErr.hidden = false; return; }
+    const url = id ? '/api/subscriptions/' + id : '/api/subscriptions';
+    const r = await fetch(url, { method: id ? 'PUT' : 'POST',
+      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const d = await r.json();
+    if (!r.ok) { subErr.textContent = d.error || 'Something went wrong.'; subErr.hidden = false; return; }
+    subBackdrop.hidden = true;
+    await loadTree();
+    const newId = id ? Number(id) : d.id;
+    window.selectScope('subscription', newId, body.name);
+  });
+
+  document.getElementById('sub-delete').addEventListener('click', async () => {
+    const id = document.getElementById('sub-id').value;
+    if (!id) return;
+    const name = document.getElementById('sub-name').value.trim() || 'this subscription';
+    if (!await confirmDialog({ title: 'Delete subscription',
+      message: `Delete "${name}"? This can't be undone.`, confirmLabel: 'Delete', danger: true })) return;
+    await fetch('/api/subscriptions/' + id, { method: 'DELETE' });
+    subBackdrop.hidden = true;
+    await loadTree();
+    window.selectScope('overview', null, 'Overview');
+  });
+
+  // ── Settings modal ─────────────────────────────────────────────────────────
+  const sBackdrop = document.getElementById('settings-backdrop');
+  document.getElementById('btn-settings').addEventListener('click', () => {
+    sBackdrop.hidden = false; renderManage(); loadSettings();
+  });
+  document.getElementById('settings-close').addEventListener('click', () => sBackdrop.hidden = true);
+  sBackdrop.addEventListener('click', e => { if (e.target === sBackdrop) sBackdrop.hidden = true; });
+
+  const settingsTabs = [...document.querySelectorAll('.settings-tab')];
+  const settingsPanels = [...document.querySelectorAll('.settings-panel')];
+  settingsTabs.forEach(tab => tab.addEventListener('click', () => {
+    settingsTabs.forEach(t => t.classList.toggle('is-active', t === tab));
+    settingsPanels.forEach(p => p.hidden = p.dataset.panel !== tab.dataset.tab);
+  }));
+
+  async function loadSettings() {
+    let s;
+    try { s = await (await fetch('/api/settings')).json(); } catch { return; }
+    CURRENCY = s.currency || CURRENCY;
+    document.getElementById('currency-input').value = CURRENCY;
+    document.getElementById('help-upcoming-days').textContent = s.upcoming_days;
+    syncCurrencySymbols();
+  }
+
+  const currencyInput = document.getElementById('currency-input');
+  const currencyStatus = document.getElementById('currency-status');
+  let currencyTimer = null;
+  currencyInput.addEventListener('input', () => {
+    clearTimeout(currencyTimer);
+    currencyTimer = setTimeout(async () => {
+      const v = currencyInput.value.trim();
+      if (!v) return;
+      const r = await fetch('/api/settings', { method: 'POST',
+        headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ currency: v }) });
+      if (r.ok) {
+        CURRENCY = v; syncCurrencySymbols();
+        currencyStatus.textContent = '✓ Saved';
+        setTimeout(() => currencyStatus.textContent = '', 1500);
+        await loadTree();
+        if (window.reloadView) window.reloadView();
+      }
+    }, 400);
+  });
+
+  // Manage categories
+  function renderManage() {
+    const root = document.getElementById('manage-list');
+    root.innerHTML = '';
+    if (!TREE.tree.length) {
+      root.innerHTML = '<p class="settings-desc">No categories yet — add one below.</p>';
+      return;
+    }
+    for (const cat of TREE.tree) {
+      const box = document.createElement('div');
+      box.className = 'manage-cat';
+      box.innerHTML =
+        `<div class="manage-cat-head">
+           <span class="name">${escHtml(cat.name)}</span>
+           <span class="manage-count">${cat.count} sub${cat.count === 1 ? '' : 's'}</span>
+           <div class="manage-actions">
+             <button class="btn-xs" data-act="cat-rename" data-id="${cat.id}" data-name="${escHtml(cat.name)}">Rename</button>
+             <button class="btn-xs btn-danger-xs" data-act="cat-del" data-id="${cat.id}" data-name="${escHtml(cat.name)}">Delete</button>
+           </div>
+         </div>`;
+      root.appendChild(box);
+    }
+    root.querySelectorAll('[data-act]').forEach(b => b.addEventListener('click', onManageAction));
+  }
+
+  async function onManageAction(e) {
+    const b = e.currentTarget, act = b.dataset.act, id = b.dataset.id, name = b.dataset.name;
+    const refresh = async () => { await loadTree(); renderManage(); if (window.reloadView) window.reloadView(); };
+    if (act === 'cat-rename') {
+      const v = await promptDialog({ title: 'Rename category', message: 'Enter a new name:',
+        defaultValue: name, placeholder: 'New name', confirmLabel: 'Rename' });
+      if (v === null || !v.trim() || v.trim() === name) return;
+      const r = await fetch('/api/categories/' + id, { method: 'PUT',
+        headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: v.trim() }) });
+      if (!r.ok) await alertDialog({ title: 'Error', message: (await r.json()).error || 'Something went wrong.' });
+      else refresh();
+    } else if (act === 'cat-del') {
+      const cat = TREE.tree.find(c => String(c.id) === String(id));
+      const n = cat ? cat.count : 0;
+      const msg = n
+        ? `Delete "${name}"? Its ${n} subscription${n === 1 ? '' : 's'} will be moved to "Uncategorized".`
+        : `Delete "${name}"? It has no subscriptions.`;
+      if (!await confirmDialog({ title: 'Delete category', message: msg,
+        confirmLabel: 'Delete', danger: true })) return;
+      await fetch('/api/categories/' + id, { method: 'DELETE' });
+      if (window.CURRENT && String(window.CURRENT.id) === String(id) && window.CURRENT.scope === 'category')
+        window.selectScope('overview', null, 'Overview');
+      refresh();
+    }
+  }
+
+  document.getElementById('newcat-add').addEventListener('click', async () => {
+    const inp = document.getElementById('newcat-name');
+    const v = (inp.value || '').trim(); if (!v) return;
+    const r = await fetch('/api/categories', { method: 'POST',
+      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: v }) });
+    if (!r.ok) { await alertDialog({ title: 'Error', message: (await r.json()).error || 'Something went wrong.' }); return; }
+    inp.value = ''; await loadTree(); renderManage();
+  });
+  document.getElementById('newcat-name').addEventListener('keydown', e => {
+    if (e.key === 'Enter') document.getElementById('newcat-add').click();
+  });
+
+  // Reset
+  document.getElementById('reset-open').addEventListener('click', () => {
+    document.getElementById('reset-confirm').hidden = false;
+    document.getElementById('reset-open').hidden = true;
+    document.getElementById('reset-input').focus();
+  });
+  document.getElementById('reset-go').addEventListener('click', async () => {
+    const status = document.getElementById('reset-status');
+    if (document.getElementById('reset-input').value.trim().toUpperCase() !== 'RESET') {
+      status.textContent = 'Type RESET to confirm.'; return;
+    }
+    await fetch('/api/reset', { method: 'POST' });
+    location.reload();
+  });
+
+  // ── Help modal ──────────────────────────────────────────────────────────────
+  const hBackdrop = document.getElementById('help-backdrop');
+  document.getElementById('btn-help').addEventListener('click', () => hBackdrop.hidden = false);
+  document.getElementById('help-close').addEventListener('click', () => hBackdrop.hidden = true);
+  hBackdrop.addEventListener('click', e => { if (e.target === hBackdrop) hBackdrop.hidden = true; });
+
+  // Global Escape closes the top-most open modal.
+  document.addEventListener('keydown', e => {
+    if (e.key !== 'Escape') return;
+    const tag = (e.target.tagName || '').toLowerCase();
+    if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
+    // Everything except the add/edit form closes on Escape; the form is button-only.
+    const open = [...document.querySelectorAll('.modal-backdrop:not(.app-dialog-backdrop):not(#sub-backdrop)')].reverse().find(m => !m.hidden);
+    if (open) open.hidden = true;
+  });
+  </script>
+  {% block scripts %}{% endblock %}
+</body>
+</html>
