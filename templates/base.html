@@ -9,9 +9,9 @@
   <script>
     (function () {
       try {
-        var t = localStorage.getItem('subs-theme') || 'blue';
+        var t = localStorage.getItem('subs-theme') || 'neon';
         document.documentElement.setAttribute('data-theme', t);
-      } catch (e) { document.documentElement.setAttribute('data-theme', 'blue'); }
+      } catch (e) { document.documentElement.setAttribute('data-theme', 'neon'); }
     })();
   </script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -20,7 +20,8 @@
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="apple-touch-icon" href="{{ url_for('static', filename='icon.svg') }}">
-  <meta name="theme-color" content="#05070e">
+  <!-- Mirrors the top bar (--header-bg), which is black in every theme. -->
+  <meta name="theme-color" content="#000000">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="Subscriptions">
@@ -30,14 +31,43 @@
   <!-- ── Header ─────────────────────────────────────────────────────────── -->
   <header class="site-header">
     <div class="header-left">
-      <button class="btn-icon btn-menu" id="btn-menu" aria-label="Toggle sidebar">☰</button>
+      <button class="btn-icon btn-menu" id="btn-menu" type="button" aria-label="Toggle sidebar">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <line x1="3" y1="6" x2="21" y2="6"></line>
+          <line x1="3" y1="12" x2="21" y2="12"></line>
+          <line x1="3" y1="18" x2="21" y2="18"></line>
+        </svg>
+      </button>
       <a href="/" class="logo"><span class="logo-text">Subscriptions</span></a>
     </div>
     <span class="header-title">Subscription Tracker</span>
     <div class="header-actions">
-      <button class="btn-icon" id="btn-add" data-tip="Add a subscription" aria-label="Add a subscription">＋</button>
-      <button class="btn-icon" id="btn-help" data-tip="Help" aria-label="Help">?</button>
-      <button class="btn-icon" id="btn-settings" data-tip="Settings" aria-label="Settings">⚙</button>
+      <button class="btn-icon" id="btn-add" type="button" data-tip="Add a subscription"
+              aria-label="Add a subscription" aria-haspopup="dialog">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <line x1="12" y1="5" x2="12" y2="19"></line>
+          <line x1="5" y1="12" x2="19" y2="12"></line>
+        </svg>
+      </button>
+      <button class="btn-icon" id="btn-help" type="button" data-tip="Help"
+              aria-label="Help" aria-haspopup="dialog">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="12" cy="12" r="10"></circle>
+          <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"></path>
+          <line x1="12" y1="17" x2="12.01" y2="17"></line>
+        </svg>
+      </button>
+      <button class="btn-icon" id="btn-settings" type="button" data-tip="Settings"
+              aria-label="Settings" aria-haspopup="dialog">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="12" cy="12" r="3"></circle>
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+        </svg>
+      </button>
     </div>
   </header>
 
@@ -111,6 +141,7 @@
       <div class="settings-tabs" role="tablist">
         <button class="settings-tab is-active" data-tab="categories" role="tab">Categories</button>
         <button class="settings-tab" data-tab="prefs" role="tab">Preferences</button>
+        <button class="settings-tab" data-tab="appearance" role="tab">Appearance</button>
         <button class="settings-tab" data-tab="data" role="tab">Data</button>
       </div>
 
@@ -131,18 +162,6 @@
       <!-- ── Tab: Preferences ────────────────────────────────────────────── -->
       <div class="settings-panel" data-panel="prefs" hidden>
         <div class="settings-section">
-          <h3 class="settings-section-title">Appearance</h3>
-          <label class="field">Theme
-            <select id="theme-select" class="modal-input">
-              <option value="blue">Deep blue — dark</option>
-              <option value="neon">Terminal — dark green</option>
-              <option value="light">Light</option>
-            </select>
-          </label>
-          <p class="settings-desc">Switches the colour scheme instantly. Your choice is remembered in
-            this browser.</p>
-        </div>
-        <div class="settings-section">
           <h3 class="settings-section-title">Currency</h3>
           <label class="field">Symbol shown next to amounts
             <input type="text" id="currency-input" class="modal-input" maxlength="4" style="max-width:120px">
@@ -151,6 +170,24 @@
             <span id="currency-status" class="settings-status"></span></p>
         </div>
       </div>
+
+      <!-- ── Tab: Appearance ─────────────────────────────────────────────── -->
+      <div class="settings-panel" data-panel="appearance" hidden>
+        <div class="settings-section">
+          <h3 class="settings-section-title">Appearance</h3>
+          <label class="field">Theme
+            <select id="theme-select" class="modal-input">
+              <option value="neon">Dark Terminal</option>
+              <option value="blue">Deep Blue</option>
+              <option value="light">Light</option>
+              <option value="github">GitHub</option>
+              <option value="amber">Amber</option>
+            </select>
+          </label>
+          <p class="settings-desc">Switches the colour scheme instantly. Your choice is remembered in
+            this browser.</p>
+        </div>
+      </div><!-- /Tab: Appearance -->
 
       <!-- ── Tab: Data ───────────────────────────────────────────────────── -->
       <div class="settings-panel" data-panel="data" hidden>
@@ -266,15 +303,22 @@
   window.renewLabel = renewLabel; window.renewClass = renewClass;
 
   // ── Theme switching ──────────────────────────────────────────────────────
+  // The <head> applies the saved theme before paint; here we keep the picker in
+  // sync, persist changes, and match the browser/PWA chrome colour to the theme.
+  // These mirror each theme's --header-bg, not --bg: the browser chrome sits
+  // directly above the top bar, which is black in every theme.
   const THEME_KEY = 'subs-theme';
-  const THEME_BG = { neon: '#07090b', blue: '#05070e', light: '#eef1f6' };
-  function currentTheme() { return localStorage.getItem(THEME_KEY) || 'blue'; }
+  const THEME_HEADER_BG = {
+    neon: '#000000', blue: '#000000', light: '#000000',
+    github: '#010409', amber: '#000000',
+  };
+  function currentTheme() { return localStorage.getItem(THEME_KEY) || 'neon'; }
   function applyTheme(t) {
-    if (!THEME_BG[t]) t = 'blue';
+    if (!THEME_HEADER_BG[t]) t = 'neon';
     document.documentElement.setAttribute('data-theme', t);
     try { localStorage.setItem(THEME_KEY, t); } catch (e) {}
     const meta = document.querySelector('meta[name="theme-color"]');
-    if (meta) meta.setAttribute('content', THEME_BG[t]);
+    if (meta) meta.setAttribute('content', THEME_HEADER_BG[t]);
     const sel = document.getElementById('theme-select');
     if (sel) sel.value = t;
   }
@@ -568,7 +612,9 @@
     sBackdrop.hidden = false; renderManage(); loadSettings();
   });
   document.getElementById('settings-close').addEventListener('click', () => sBackdrop.hidden = true);
-  sBackdrop.addEventListener('click', e => { if (e.target === sBackdrop) sBackdrop.hidden = true; });
+  // Deliberately no click-outside / Escape close: Settings holds in-progress edits
+  // (a category rename, the reset confirmation, the currency field mid-debounce),
+  // so it closes only via its Close button — same rule as the add/edit form.
 
   const settingsTabs = [...document.querySelectorAll('.settings-tab')];
   const settingsPanels = [...document.querySelectorAll('.settings-panel')];
@@ -695,8 +741,10 @@
     if (e.key !== 'Escape') return;
     const tag = (e.target.tagName || '').toLowerCase();
     if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
-    // Everything except the add/edit form closes on Escape; the form is button-only.
-    const open = [...document.querySelectorAll('.modal-backdrop:not(.app-dialog-backdrop):not(#sub-backdrop)')].reverse().find(m => !m.hidden);
+    // The add/edit form and Settings are button-only; everything else closes on Escape.
+    const open = [...document.querySelectorAll(
+      '.modal-backdrop:not(.app-dialog-backdrop):not(#sub-backdrop):not(#settings-backdrop)')]
+      .reverse().find(m => !m.hidden);
     if (open) open.hidden = true;
   });
   </script>

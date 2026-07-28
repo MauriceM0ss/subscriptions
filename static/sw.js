@@ -1,6 +1,6 @@
 /* Subscriptions service worker — app-shell cache so the UI opens offline.
    Bump CACHE when the shell changes to force an update. */
-const CACHE = 'subscriptions-v1';
+const CACHE = 'subscriptions-v2';
 const SHELL = ['/', '/static/style.css', '/static/icon.svg', '/static/favicon.svg'];
 
 self.addEventListener('install', e => {

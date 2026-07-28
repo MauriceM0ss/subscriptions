@@ -6,16 +6,66 @@ select { -webkit-appearance: none; appearance: none; }
 /* ── Theming ──────────────────────────────────────────────────────────────
    The whole UI is driven by these tokens. A theme is selected by the
    `data-theme` attribute on <html> (set early in base.html to avoid a flash,
-   and switchable from Settings → Preferences → Appearance). */
+   and switchable from Settings → Appearance).
+   `--on-accent` is the text colour placed on an accent-filled surface;
+   `--glow-*` are neon glows that collapse to `none` in the calmer themes.
+
+   The palettes are shared verbatim with the CyberNewsHub app, token names
+   included, so a tweak there can be pasted straight in here.
+
+   The top bar is black in every theme, so what sits on it can't reuse the body
+   tokens — in the Light theme `--text` and `--accent` are near-black and would
+   vanish. The `--header-*` tokens are that bar's own palette: `--header-text`
+   for the wordmark, `--header-fg` for the subtitle, `--header-logo` for the
+   `>_` prompt and accented button states. */
 
 :root {
+  /* Layout dimensions — independent of the colour theme. */
   --sidebar-w:   264px;
   --header-h:    54px;
   --statusbar-h: 26px;
+  /* This app's amber accent (renewal due soon) is the shared palettes' `--star`.
+     Aliased rather than renamed so the theme blocks stay identical to
+     CyberNewsHub's; `--star` is redefined per theme on this same element, so
+     `--warn` follows it. */
+  --warn: var(--star);
 }
 
-/* ── Deep blue — dark (default). ── */
-:root, [data-theme="blue"] {
+/* ── Dark Terminal (default). Adapted from the Command Center app. ── */
+:root, [data-theme="neon"] {
+  --bg:          #07090b;          /* near-black */
+  --surface:     #0e1114;          /* panels, cards, header, sidebar */
+  --surface2:    #161b20;          /* insets, hovers, code */
+  --border:      rgba(120, 140, 150, .14);
+  --text:        #e6edf2;
+  --muted:       #7d8a93;
+  --accent:      #39ff14;          /* neon green — primary / active */
+  --accent-hi:   #5dff3a;          /* brighter green for hovered text */
+  --accent2:     #19f0ff;          /* cyan — passive section labels */
+  --accent-dim:  rgba(57, 255, 20, .12);
+  --accent-glow: rgba(57, 255, 20, .22);
+  --danger:      #ff5563;
+  --danger-dim:  rgba(255, 85, 99, .13);
+  --success:     #39ff14;
+  --star:        #ffb13d;
+  --on-accent:   #07090b;          /* dark text on the neon fill */
+  --glow-logo:   0 0 12px rgba(57, 255, 20, .6);
+  --glow-text:   0 0 10px rgba(57, 255, 20, .35);
+  --sel-bg:      rgba(57, 255, 20, .28);
+  --sel-fg:      #fff;
+  --radius:      6px;
+  --shadow:      0 16px 50px rgba(0, 0, 0, .55);
+  --header-bg:     #000000;
+  --header-border: rgba(255, 255, 255, .14);
+  --header-text:   #e6edf2;          /* wordmark */
+  --header-fg:     #19f0ff;          /* subtitle */
+  --header-logo:   #39ff14;          /* >_ prompt */
+  --font-mono:   "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --font-head:   "Space Grotesk", -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+/* ── Deep Blue — the original deep-blue dark theme. ── */
+[data-theme="blue"] {
   --bg:          #05070e;
   --surface:     #0a0f1d;
   --surface2:    #111a30;
@@ -24,13 +74,13 @@ select { -webkit-appearance: none; appearance: none; }
   --muted:       #5f6c8a;
   --accent:      #3b82f6;
   --accent-hi:   #60a5fa;
-  --accent2:     #5f6c8a;
+  --accent2:     #5f6c8a;          /* labels were plain muted grey */
   --accent-dim:  #0f2247;
   --accent-glow: rgba(59, 130, 246, .16);
   --danger:      #ef4444;
   --danger-dim:  #3b0f0f;
   --success:     #22c55e;
-  --warn:        #fbbf24;
+  --star:        #fbbf24;
   --on-accent:   #fff;
   --glow-logo:   none;
   --glow-text:   none;
@@ -38,36 +88,13 @@ select { -webkit-appearance: none; appearance: none; }
   --sel-fg:      #fff;
   --radius:      10px;
   --shadow:      0 2px 16px rgba(0, 0, 0, .5);
+  --header-bg:     #000000;
+  --header-border: rgba(255, 255, 255, .14);
+  --header-text:   #d3ddf2;
+  --header-fg:     #8593b0;          /* --accent2 lifted; too dark on black */
+  --header-logo:   #60a5fa;
   --font-mono:   -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   --font-head:   -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-}
-
-/* ── Terminal — dark green. Adapted from the Command Center look. ── */
-[data-theme="neon"] {
-  --bg:          #07090b;
-  --surface:     #0e1114;
-  --surface2:    #161b20;
-  --border:      rgba(120, 140, 150, .14);
-  --text:        #e6edf2;
-  --muted:       #7d8a93;
-  --accent:      #39ff14;
-  --accent-hi:   #5dff3a;
-  --accent2:     #19f0ff;
-  --accent-dim:  rgba(57, 255, 20, .12);
-  --accent-glow: rgba(57, 255, 20, .22);
-  --danger:      #ff5563;
-  --danger-dim:  rgba(255, 85, 99, .13);
-  --success:     #39ff14;
-  --warn:        #ffb13d;
-  --on-accent:   #07090b;
-  --glow-logo:   0 0 12px rgba(57, 255, 20, .6);
-  --glow-text:   0 0 10px rgba(57, 255, 20, .35);
-  --sel-bg:      rgba(57, 255, 20, .28);
-  --sel-fg:      #fff;
-  --radius:      6px;
-  --shadow:      0 16px 50px rgba(0, 0, 0, .55);
-  --font-mono:   "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
-  --font-head:   "Space Grotesk", -apple-system, BlinkMacSystemFont, sans-serif;
 }
 
 /* ── Light. ── */
@@ -80,13 +107,13 @@ select { -webkit-appearance: none; appearance: none; }
   --muted:       #5c6781;
   --accent:      #2563eb;
   --accent-hi:   #1d4ed8;
-  --accent2:     #5c6781;
+  --accent2:     #5c6781;          /* labels muted grey */
   --accent-dim:  #dce8ff;
   --accent-glow: rgba(37, 99, 235, .18);
   --danger:      #dc2626;
   --danger-dim:  #fdecec;
   --success:     #16a34a;
-  --warn:        #d97706;
+  --star:        #d97706;
   --on-accent:   #fff;
   --glow-logo:   none;
   --glow-text:   none;
@@ -94,6 +121,80 @@ select { -webkit-appearance: none; appearance: none; }
   --sel-fg:      #0b1220;
   --radius:      10px;
   --shadow:      0 6px 24px rgba(30, 41, 70, .12);
+  /* The bar stays black here too, so these are on-black tints — this theme's own
+     --text and --accent are far too dark to read against it. */
+  --header-bg:     #000000;
+  --header-border: rgba(255, 255, 255, .16);
+  --header-text:   #e8ecf3;
+  --header-fg:     #cbd5e1;
+  --header-logo:   #60a5fa;
+  --font-mono:   -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-head:   -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+
+/* ── GitHub — Primer dark. Ported from the MyHours app. ── */
+[data-theme="github"] {
+  --bg:          #0d1117;
+  --surface:     #161b22;
+  --surface2:    #21262d;
+  --border:      #30363d;
+  --text:        #e6edf3;
+  --muted:       #8b949e;
+  --accent:      #2f81f7;
+  --accent-hi:   #58a6ff;
+  --accent2:     #8b949e;          /* labels plain muted */
+  --accent-dim:  rgba(47, 129, 247, .15);
+  --accent-glow: rgba(47, 129, 247, .15);
+  --danger:      #f85149;
+  --danger-dim:  rgba(248, 81, 73, .15);
+  --success:     #2ea043;          /* GitHub green */
+  --star:        #e3b341;          /* Primer attention yellow */
+  --on-accent:   #ffffff;
+  --glow-logo:   none;
+  --glow-text:   none;
+  --sel-bg:      rgba(47, 129, 247, .30);
+  --sel-fg:      #ffffff;
+  --radius:      6px;
+  --shadow:      0 8px 24px rgba(1, 4, 9, .5);
+  --header-bg:     #010409;          /* Primer canvas.inset — near-black */
+  --header-border: #30363d;
+  --header-text:   #e6edf3;
+  --header-fg:     #8b949e;
+  --header-logo:   #58a6ff;
+  --font-mono:   ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  --font-head:   -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans",
+                 Helvetica, Arial, sans-serif;
+}
+
+/* ── Amber. Ported from the MyHours app. ── */
+[data-theme="amber"] {
+  --bg:          #0d0f14;
+  --surface:     #141820;
+  --surface2:    #1c2130;
+  --border:      #252d3d;
+  --text:        #dde3ef;
+  --muted:       #6b7794;
+  --accent:      #f59e0b;
+  --accent-hi:   #fbbf24;
+  --accent2:     #6b7794;          /* labels plain muted */
+  --accent-dim:  #3d2a00;
+  --accent-glow: rgba(245, 158, 11, .12);
+  --danger:      #ef4444;
+  --danger-dim:  #3b0f0f;
+  --success:     #22c55e;
+  --star:        #fbbf24;
+  --on-accent:   #000;
+  --glow-logo:   none;
+  --glow-text:   none;
+  --sel-bg:      rgba(245, 158, 11, .28);
+  --sel-fg:      #fff;
+  --radius:      10px;
+  --shadow:      0 2px 16px rgba(0, 0, 0, .5);
+  --header-bg:     #000000;
+  --header-border: rgba(255, 255, 255, .14);
+  --header-text:   #dde3ef;
+  --header-fg:     #f0b45f;
+  --header-logo:   #fbbf24;
   --font-mono:   -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   --font-head:   -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
 }
@@ -111,29 +212,31 @@ a { color: inherit; text-decoration: none; }
 ::selection { background: var(--sel-bg); color: var(--sel-fg); }
 
 /* ── Header ──────────────────────────────────────────────────────────────── */
+/* Black in every theme, Light included — see the --header-* note above. */
 .site-header {
   position: sticky; top: 0; z-index: 100;
   height: var(--header-h);
-  background: var(--surface);
-  border-bottom: 1px solid var(--border);
+  background: var(--header-bg);
+  border-bottom: 1px solid var(--header-border);
   padding: 0 20px;
   display: grid;
   grid-template-columns: 1fr auto 1fr;
   align-items: center;
 }
-.logo { display: flex; align-items: center; gap: 9px; font-family: var(--font-head); font-weight: 700; font-size: 1rem; color: var(--text); letter-spacing: -.01em; }
+.logo { display: flex; align-items: center; gap: 9px; font-family: var(--font-head); font-weight: 700; font-size: 1rem; color: var(--header-text); letter-spacing: -.01em; }
 .logo::before {
-  content: ">_"; font-weight: 700; color: var(--accent);
+  content: ">_"; font-weight: 700; color: var(--header-logo);
   font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
   text-shadow: var(--glow-logo);
 }
 .header-title {
-  font-size: .68rem; font-weight: 600; color: var(--accent2);
+  font-size: .68rem; font-weight: 600; color: var(--header-fg);
   letter-spacing: .24em; text-transform: uppercase; justify-self: center;
 }
 .header-actions { display: flex; gap: 8px; justify-self: end; align-items: center; }
 .header-left { display: flex; align-items: center; gap: 10px; }
-.btn-menu { display: inline-flex; font-size: 1.15rem; }
+/* Hamburger: a drawer toggle on mobile, a sidebar collapse toggle on desktop. */
+.btn-menu { display: inline-flex; }
 
 .btn-icon {
   cursor: pointer; background: none; border: 1px solid var(--border);
@@ -143,7 +246,20 @@ a { color: inherit; text-decoration: none; }
   display: inline-flex; align-items: center; justify-content: center;
 }
 .btn-icon:hover { background: var(--surface2); color: var(--text); border-color: var(--accent); }
-#btn-add { font-size: 1.2rem; }
+
+/* Top-bar buttons follow the SecAnalysis app: monochrome stroked SVG glyphs in
+   a chrome-free chip — no resting border, no accent outline on hover, and a
+   focus ring instead. The bordered .btn-icon above still serves any in-page
+   icon buttons.
+   These sit on black whatever the theme, so the resting/hover tints are literal
+   on-black values rather than tokens: --muted and --text would put near-black
+   glyphs on a near-white chip in the Light theme. */
+.site-header .btn-icon { color: rgba(230, 237, 242, .62); border-color: transparent; }
+.site-header .btn-icon:hover { background: rgba(255, 255, 255, .1); color: #fff; border-color: transparent; }
+.site-header .btn-icon:focus-visible {
+  outline: none; border-color: var(--header-logo); box-shadow: 0 0 0 3px rgba(255, 255, 255, .14);
+}
+.site-header .btn-icon svg { display: block; }
 
 /* ── Tooltips ────────────────────────────────────────────────────────────── */
 [data-tip] { position: relative; }
