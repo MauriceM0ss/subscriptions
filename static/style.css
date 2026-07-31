@@ -199,6 +199,27 @@ select { -webkit-appearance: none; appearance: none; }
   --font-head:   -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
 }
 
+/* ── Pane rule ──────────────────────────────────────────────────────────────
+   The 1px lines dividing one structural region from another: header from body,
+   sidebar from content, status bar from content, tab strip from panel. Split
+   out of --border so they can be switched off in one place without also
+   flattening the cards, inputs and list rows that share that token.
+
+   Declared once, outside the [data-theme] blocks on purpose: var() resolves at
+   use time, so `var(--border)` here means "whichever theme is live" — the
+   switch works across all five palettes without touching any of them.
+
+     transparent    lines off (current)
+     var(--border)  lines back on, theme-correct
+
+   The same token exists in the other apps in the family (cyberdash,
+   cybernewshub, SecAnalysis, MyHours, peoplemanager), so they stay in step.
+   Per-record separators (.up-row, .detail-row, .ph-row, .tree-cat-item)
+   deliberately still use --border — this is region boundaries only. */
+:root {
+  --pane-rule: transparent;
+}
+
 body {
   font-family: var(--font-mono);
   background: var(--bg);
@@ -217,7 +238,7 @@ a { color: inherit; text-decoration: none; }
   position: sticky; top: 0; z-index: 100;
   height: var(--header-h);
   background: var(--header-bg);
-  border-bottom: 1px solid var(--header-border);
+  border-bottom: 1px solid var(--pane-rule);
   padding: 0 20px;
   display: grid;
   grid-template-columns: 1fr auto 1fr;
@@ -283,7 +304,7 @@ a { color: inherit; text-decoration: none; }
 /* ── Status bar ──────────────────────────────────────────────────────────── */
 .app-statusbar {
   height: var(--statusbar-h); flex-shrink: 0;
-  background: var(--surface); border-top: 1px solid var(--border);
+  background: var(--surface); border-top: 1px solid var(--pane-rule);
   display: flex; align-items: center; gap: 16px;
   padding: 0 16px; font-size: .76rem; color: var(--muted);
 }
@@ -297,13 +318,13 @@ a { color: inherit; text-decoration: none; }
 /* ── Sidebar ─────────────────────────────────────────────────────────────── */
 .nav-sidebar {
   width: var(--sidebar-w); flex-shrink: 0;
-  background: var(--surface); border-right: 1px solid var(--border);
+  background: var(--surface); border-right: 1px solid var(--pane-rule);
   overflow-y: auto; display: flex; flex-direction: column; padding-bottom: 16px;
   transition: width .2s ease;
 }
 .nav-backdrop { position: fixed; inset: 0; z-index: 140; background: rgba(0, 0, 0, .5); }
 
-.nav-quick { padding: 8px 10px; border-bottom: 1px solid var(--border); display: flex; flex-direction: column; gap: 2px; }
+.nav-quick { padding: 8px 10px; border-bottom: 1px solid var(--pane-rule); display: flex; flex-direction: column; gap: 2px; }
 .quick-link {
   display: flex; align-items: center; gap: 9px;
   padding: 7px 12px; border-radius: 7px;
@@ -564,7 +585,7 @@ textarea.modal-input { resize: vertical; }
 .settings-modal { height: min(680px, calc(100vh - 40px)); overflow: hidden; }
 .settings-panel { flex: 1 1 auto; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 22px; }
 .settings-panel[hidden] { display: none; }
-.settings-tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--border); margin-top: -2px; flex-shrink: 0; }
+.settings-tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--pane-rule); margin-top: -2px; flex-shrink: 0; }
 .settings-tab {
   appearance: none; background: none; border: none; cursor: pointer;
   padding: 8px 16px; font-size: .9rem; font-weight: 600; color: var(--muted);
