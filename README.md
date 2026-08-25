@@ -1,5 +1,7 @@
 # Subscriptions
 
+![The Subscriptions overview, Dark Terminal theme](docs/screenshot.png)
+
 A small, self-hosted web app for tracking the subscriptions you pay for — what
 they cost per month and per year, when they renew, and how much you've spent so
 far. Runs in a single Docker container.
