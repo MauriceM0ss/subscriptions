@@ -811,6 +811,206 @@ def api_export():
                      download_name="subscriptions-export.json", mimetype="application/json")
 
 
+# ── API: import ───────────────────────────────────────────────────────────────
+# An export carries derived fields (monthly_cost, next_renewal, …) and may come
+# from a newer instance with extra columns; the loader only ever writes back the
+# columns below and coerces every value, so a slightly different shape is fine.
+def _imp_int(v, default=0):
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return default
+
+
+def _imp_float(v, default=0.0):
+    try:
+        return round(float(v), 2)
+    except (TypeError, ValueError):
+        return default
+
+
+def _imp_flag(v):
+    """Normalise a truthy JSON value (True / 1 / "1" / "yes") to a 0/1 int."""
+    return 1 if v in (1, True, "1", "true", "True", "yes") else 0
+
+
+def _imp_str(v):
+    return "" if v is None else str(v)
+
+
+def _validate_import(data):
+    """Check an uploaded file is shaped like an export this app produces.
+    Returns an error string, or None when it is safe to load."""
+    if not isinstance(data, dict):
+        return "That file isn't a subscriptions export."
+    if not isinstance(data.get("categories"), list) or \
+            not isinstance(data.get("subscriptions"), list):
+        return "That file is missing its categories or subscriptions."
+    for key in ("price_history", "activation_periods", "usage_charges", "games"):
+        if key in data and not isinstance(data[key], list):
+            return f"The '{key}' section must be a list."
+    cat_ids = {_imp_int(c.get("id"), None)
+               for c in data["categories"] if isinstance(c, dict)}
+    for s in data["subscriptions"]:
+        if not isinstance(s, dict) or not _imp_str(s.get("name")).strip():
+            return "A subscription in the file has no name."
+        if _imp_int(s.get("category_id"), None) not in cat_ids:
+            return (f'Subscription "{s.get("name")}" refers to a category that '
+                    "isn't in the file.")
+    return None
+
+
+def _do_import(data):
+    """Replace every category, subscription and game with the file's contents,
+    keeping the original ids so the cross-references line up.
+
+    Runs in one transaction: any failure rolls the whole thing back and the
+    data already in the app is left untouched. Child rows (price / activation /
+    usage) whose subscription isn't in the file are skipped rather than fatal.
+    """
+    cats = [c for c in data.get("categories") or [] if isinstance(c, dict)]
+    subs = [s for s in data.get("subscriptions") or [] if isinstance(s, dict)]
+    counts = {"categories": 0, "subscriptions": 0, "price_history": 0,
+              "activation_periods": 0, "usage_charges": 0, "games": 0, "skipped": 0}
+
+    with db() as conn:
+        # Wipe first, exactly like /api/reset. price_history, activation_periods
+        # and usage_charges follow their subscription via ON DELETE CASCADE.
+        conn.execute("DELETE FROM subscriptions")
+        conn.execute("DELETE FROM games")
+        conn.execute("DELETE FROM categories")
+        try:
+            conn.execute("DELETE FROM sqlite_sequence")   # restart ids cleanly
+        except sqlite3.OperationalError:
+            pass
+
+        for c in cats:
+            conn.execute(
+                "INSERT INTO categories (id, name, sort_order, one_time, household) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (_imp_int(c.get("id"), None), _imp_str(c.get("name")).strip(),
+                 _imp_int(c.get("sort_order")), _imp_flag(c.get("one_time")),
+                 _imp_flag(c.get("household"))))
+        counts["categories"] = len(cats)
+
+        sub_ids = set()
+        for s in subs:
+            sid = _imp_int(s.get("id"), None)
+            conn.execute(
+                "INSERT INTO subscriptions (id, category_id, name, billing_cycle, "
+                "amount, start_date, renew_date, active, payment_method, necessity, "
+                "notes, sort_order, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (sid, _imp_int(s.get("category_id")), _imp_str(s.get("name")).strip(),
+                 (_imp_str(s.get("billing_cycle")) or "monthly").lower(),
+                 _imp_float(s.get("amount")), _imp_str(s.get("start_date"))[:10],
+                 _imp_str(s.get("renew_date"))[:10], _imp_flag(s.get("active")),
+                 _imp_str(s.get("payment_method")),
+                 _imp_str(s.get("necessity")) or config.DEFAULT_NECESSITY,
+                 _imp_str(s.get("notes")), _imp_int(s.get("sort_order")),
+                 _imp_str(s.get("created_at"))))
+            if sid is not None:
+                sub_ids.add(sid)
+        counts["subscriptions"] = len(subs)
+
+        for p in data.get("price_history") or []:
+            if not isinstance(p, dict):
+                continue
+            if _imp_int(p.get("sub_id"), None) not in sub_ids:
+                counts["skipped"] += 1
+                continue
+            conn.execute(
+                "INSERT INTO price_history (id, sub_id, amount, billing_cycle, "
+                "changed_on, note) VALUES (?, ?, ?, ?, ?, ?)",
+                (_imp_int(p.get("id"), None), _imp_int(p.get("sub_id")),
+                 _imp_float(p.get("amount")),
+                 (_imp_str(p.get("billing_cycle")) or "monthly").lower(),
+                 _imp_str(p.get("changed_on"))[:10], _imp_str(p.get("note"))))
+            counts["price_history"] += 1
+
+        for a in data.get("activation_periods") or []:
+            if not isinstance(a, dict):
+                continue
+            if _imp_int(a.get("sub_id"), None) not in sub_ids:
+                counts["skipped"] += 1
+                continue
+            ended = a.get("ended_on")
+            conn.execute(
+                "INSERT INTO activation_periods (id, sub_id, started_on, ended_on) "
+                "VALUES (?, ?, ?, ?)",
+                (_imp_int(a.get("id"), None), _imp_int(a.get("sub_id")),
+                 _imp_str(a.get("started_on"))[:10],
+                 _imp_str(ended)[:10] if ended else None))
+            counts["activation_periods"] += 1
+
+        for u in data.get("usage_charges") or []:
+            if not isinstance(u, dict):
+                continue
+            if _imp_int(u.get("sub_id"), None) not in sub_ids:
+                counts["skipped"] += 1
+                continue
+            conn.execute(
+                "INSERT INTO usage_charges (id, sub_id, charged_on, amount, note) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (_imp_int(u.get("id"), None), _imp_int(u.get("sub_id")),
+                 _imp_str(u.get("charged_on"))[:10], _imp_float(u.get("amount")),
+                 _imp_str(u.get("note"))))
+            counts["usage_charges"] += 1
+
+        for g in data.get("games") or []:
+            if not isinstance(g, dict) or not _imp_str(g.get("name")).strip():
+                counts["skipped"] += 1
+                continue
+            conn.execute(
+                "INSERT INTO games (id, name, source, price, purchased_on, notes, "
+                "created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (_imp_int(g.get("id"), None), _imp_str(g.get("name")).strip(),
+                 _imp_str(g.get("source")), _imp_float(g.get("price")),
+                 _imp_str(g.get("purchased_on"))[:10], _imp_str(g.get("notes")),
+                 _imp_str(g.get("created_at"))))
+            counts["games"] += 1
+
+        # A file with no categories is treated like a fresh start.
+        if not cats:
+            conn.executemany(
+                "INSERT INTO categories (name, sort_order) VALUES (?, ?)",
+                [(name, i) for i, name in enumerate(config.SEED_CATEGORIES)])
+        database._ensure_one_time_category(conn)
+
+        cur = data.get("currency")
+        if cur:
+            conn.execute(
+                "INSERT INTO settings (key, value) VALUES ('currency', ?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (_imp_str(cur)[:4],))
+
+    return counts
+
+
+@app.route("/api/import", methods=["POST"])
+def api_import():
+    """Load a JSON export (this app's own format), from a file upload or a JSON
+    body, replacing all current categories, subscriptions and games."""
+    upload = request.files.get("file")
+    if upload is not None:
+        try:
+            raw = json.loads(upload.read())
+        except ValueError:
+            return jsonify({"error": "That file isn't valid JSON."}), 400
+    else:
+        raw = request.get_json(silent=True)
+    if raw is None:
+        return jsonify({"error": "No import data — attach the export file."}), 400
+    err = _validate_import(raw)
+    if err:
+        return jsonify({"error": err}), 400
+    try:
+        counts = _do_import(raw)
+    except sqlite3.IntegrityError as e:
+        return jsonify({"error": f"The file has inconsistent data ({e})."}), 400
+    return jsonify({"ok": True, "imported": counts})
+
+
 @app.route("/api/reset", methods=["POST"])
 def api_reset():
     with db() as conn:
