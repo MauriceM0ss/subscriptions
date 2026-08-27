@@ -202,6 +202,7 @@ def api_tree():
     with db() as conn:
         cats = conn.execute("SELECT * FROM categories ORDER BY sort_order, name").fetchall()
         subs = _all_enriched(conn, today)
+        game_count = conn.execute("SELECT COUNT(*) AS n FROM games").fetchone()["n"]
 
     by_cat = {}
     for s in subs:
@@ -240,6 +241,7 @@ def api_tree():
             "upcoming": len(upcoming),
             "monthly_total": round(sum(s["monthly_cost"] for s in active), 2),
             "yearly_total": round(sum(s["yearly_cost"] for s in active), 2),
+            "games": game_count,
         },
     })
 
@@ -523,6 +525,132 @@ def api_category_delete(cid):
     return jsonify({"ok": True})
 
 
+# ── API: games ────────────────────────────────────────────────────────────────
+def _clean_game(payload, partial=False):
+    """Validate and normalise a game payload. Returns (fields, error)."""
+    out = {}
+    if "name" in payload or not partial:
+        name = str(payload.get("name") or "").strip()
+        if not name:
+            return None, "Name required."
+        out["name"] = name[:200]
+    if "source" in payload or not partial:
+        source = str(payload.get("source") or "").strip()
+        if source and source not in config.GAME_SOURCES:
+            return None, "Unknown source."
+        out["source"] = source
+    if "price" in payload or not partial:
+        try:
+            price = round(float(payload.get("price") or 0), 2)
+        except (TypeError, ValueError):
+            return None, "Price must be a number."
+        if price < 0:
+            return None, "Price cannot be negative."
+        out["price"] = price
+    if "purchased_on" in payload or not partial:
+        raw = str(payload.get("purchased_on") or "")[:10]
+        # A blank date is allowed — an old purchase whose date is long forgotten
+        # should still be countable. It simply drops out of the by-year split.
+        out["purchased_on"] = raw if subscriptions.parse_date(raw) else ""
+    if "notes" in payload or not partial:
+        out["notes"] = str(payload.get("notes") or "").strip()[:500]
+    return out, None
+
+
+@app.route("/api/games")
+def api_games_list():
+    with db() as conn:
+        rows = conn.execute(
+            "SELECT * FROM games ORDER BY "
+            "CASE WHEN purchased_on = '' THEN 1 ELSE 0 END, purchased_on DESC, id DESC").fetchall()
+    return jsonify({"items": [dict(r) for r in rows],
+                    "currency": get_currency(), "sources": list(config.GAME_SOURCES)})
+
+
+@app.route("/api/games", methods=["POST"])
+def api_game_create():
+    fields, err = _clean_game(request.get_json(force=True) or {})
+    if err:
+        return jsonify({"error": err}), 400
+    fields["created_at"] = config.now_iso()
+    cols = ", ".join(fields)
+    with db() as conn:
+        cur = conn.execute(f"INSERT INTO games ({cols}) VALUES ({', '.join('?' * len(fields))})",
+                           tuple(fields.values()))
+    return jsonify({"id": cur.lastrowid, **fields}), 201
+
+
+@app.route("/api/games/<int:gid>", methods=["PUT"])
+def api_game_update(gid):
+    fields, err = _clean_game(request.get_json(force=True) or {}, partial=True)
+    if err:
+        return jsonify({"error": err}), 400
+    if not fields:
+        return jsonify({"error": "Nothing to update."}), 400
+    with db() as conn:
+        cur = conn.execute(
+            f"UPDATE games SET {', '.join(f'{k}=?' for k in fields)} WHERE id=?",
+            (*fields.values(), gid))
+        if not cur.rowcount:
+            return jsonify({"error": "Game not found."}), 404
+    return jsonify({"ok": True})
+
+
+@app.route("/api/games/<int:gid>", methods=["DELETE"])
+def api_game_delete(gid):
+    with db() as conn:
+        cur = conn.execute("DELETE FROM games WHERE id=?", (gid,))
+        if not cur.rowcount:
+            return jsonify({"error": "Game not found."}), 404
+    return jsonify({"ok": True})
+
+
+@app.route("/api/gaming-overview")
+def api_gaming_overview():
+    """Everything gaming costs: one-off game purchases plus the subscriptions
+    filed under the gaming category, which are otherwise reported separately."""
+    today = config.today()
+    with db() as conn:
+        games = [dict(r) for r in conn.execute("SELECT * FROM games").fetchall()]
+        subs = [s for s in _all_enriched(conn, today)
+                if (s.get("category_name") or "") == config.GAMING_CATEGORY]
+
+    spent = round(sum(float(g["price"]) for g in games), 2)
+
+    by_source, by_year = {}, {}
+    for g in games:
+        src = g["source"] or "Unknown"
+        by_source[src] = round(by_source.get(src, 0) + float(g["price"]), 2)
+        year = (g["purchased_on"] or "")[:4]
+        if year:
+            by_year[year] = round(by_year.get(year, 0) + float(g["price"]), 2)
+
+    recurring = [s for s in subs if not s["one_time"]]
+    sub_monthly = round(sum(s["monthly_cost"] for s in recurring if s["active"]), 2)
+    sub_spent = round(sum(s["total_spent"] for s in subs), 2)
+
+    recent = sorted(games, key=lambda g: (g["purchased_on"] or "", g["id"]), reverse=True)[:10]
+    return jsonify({
+        "currency": get_currency(),
+        "game_count": len(games),
+        "games_spent": spent,
+        "avg_price": round(spent / len(games), 2) if games else 0,
+        "sub_monthly": sub_monthly,
+        "sub_spent": sub_spent,
+        "sub_count": len(subs),
+        # The headline: one-off purchases and gaming subscriptions together.
+        "total_spent": round(spent + sub_spent, 2),
+        "by_source": sorted([{"name": k, "spent": v} for k, v in by_source.items()],
+                            key=lambda x: -x["spent"]),
+        "by_year": sorted([{"year": k, "spent": v} for k, v in by_year.items()],
+                          key=lambda x: x["year"]),
+        "recent": recent,
+        "subs": [{"id": s["id"], "name": s["name"], "one_time": s["one_time"],
+                  "monthly_cost": s["monthly_cost"], "total_spent": s["total_spent"],
+                  "active": s["active"]} for s in subs],
+    })
+
+
 # ── API: settings ─────────────────────────────────────────────────────────────
 @app.route("/api/settings", methods=["GET"])
 def api_settings_get():
@@ -554,6 +682,8 @@ def api_export():
             "SELECT * FROM activation_periods ORDER BY sub_id, started_on, id").fetchall()]
         usage = [dict(r) for r in conn.execute(
             "SELECT * FROM usage_charges ORDER BY sub_id, charged_on, id").fetchall()]
+        games = [dict(r) for r in conn.execute(
+            "SELECT * FROM games ORDER BY purchased_on, id").fetchall()]
     payload = json.dumps({
         "exported_at": now_iso(),
         "currency": get_currency(),
@@ -562,6 +692,7 @@ def api_export():
         "price_history": price_history,
         "activation_periods": periods,
         "usage_charges": usage,
+        "games": games,
     }, indent=2)
     return send_file(io.BytesIO(payload.encode("utf-8")), as_attachment=True,
                      download_name="subscriptions-export.json", mimetype="application/json")
@@ -571,10 +702,14 @@ def api_export():
 def api_reset():
     with db() as conn:
         conn.execute("DELETE FROM subscriptions")
+        conn.execute("DELETE FROM games")
         conn.execute("DELETE FROM categories")               # start clean…
         conn.executemany(                                    # …then re-seed the defaults
             "INSERT INTO categories (name, sort_order) VALUES (?, ?)",
             [(name, i) for i, name in enumerate(config.SEED_CATEGORIES)])
+        # Re-seeding only covers SEED_CATEGORIES, so the one-time bucket has to
+        # be put back explicitly or it would be missing until the next restart.
+        database._ensure_one_time_category(conn)
     return jsonify({"ok": True})
 
 

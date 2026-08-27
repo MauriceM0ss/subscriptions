@@ -14,12 +14,16 @@
 window.CURRENT = { scope: 'overview', id: null, label: 'Overview' };
 const viewEl = document.getElementById('view');
 
-document.getElementById('toolbar-add').addEventListener('click', () => window.openSubForm());
+document.getElementById('toolbar-add').addEventListener('click', () =>
+  window.CURRENT.scope === 'gaming' ? window.openGameForm() : window.openSubForm());
 
 // Switch the main view. Called by the sidebar (base.html) and internal links.
 window.selectScope = function (scope, id, label) {
   window.CURRENT = { scope, id, label };
   document.getElementById('view-title').childNodes[0].nodeValue = label;
+  // In the gaming view the primary action is adding a game, not a subscription.
+  const addBtn = document.getElementById('toolbar-add');
+  addBtn.textContent = scope === 'gaming' ? '＋ Add game' : '＋ Add subscription';
   highlightActive();
   renderView();
   if (window.closeSidebar) window.closeSidebar();
@@ -33,6 +37,7 @@ async function renderView() {
   viewEl.innerHTML = '<div class="view-loading">Loading…</div>';
   try {
     if (c.scope === 'overview') return renderOverview();
+    if (c.scope === 'gaming') return renderGaming();
     if (c.scope === 'subscription') return renderDetail(c.id);
     return renderList(c);   // all | upcoming | category
   } catch (e) {
@@ -106,6 +111,85 @@ async function renderOverview() {
 
   viewEl.querySelectorAll('.up-row').forEach(r =>
     r.addEventListener('click', () => window.selectScope('subscription', Number(r.dataset.id), '')));
+}
+
+// ── Gaming overview ───────────────────────────────────────────────────────────
+// What gaming actually costs: one-off game purchases and the subscriptions
+// filed under Gaming, which are otherwise only ever reported apart.
+async function renderGaming() {
+  const d = await (await fetch('/api/gaming-overview')).json();
+  window.CURRENCY = d.currency || window.CURRENCY;
+  setSub(`${d.game_count} game${d.game_count === 1 ? '' : 's'}` +
+         (d.sub_count ? ` · ${d.sub_count} subscription${d.sub_count === 1 ? '' : 's'}` : ''));
+
+  if (!d.game_count && !d.sub_count) {
+    viewEl.innerHTML = `<div class="empty-state"><div class="empty-icon">◈</div>
+      <div class="empty-title">Nothing tracked yet</div>
+      <div class="empty-sub">Add a game you have bought, or file a subscription under Gaming.<br><br>
+        <button class="btn-primary btn-sm" id="empty-add-game">＋ Add your first game</button></div></div>`;
+    document.getElementById('empty-add-game').addEventListener('click', () => window.openGameForm());
+    return;
+  }
+
+  const tiles = [
+    { label: 'All gaming', value: fmtMoney(d.total_spent), hint: 'games + subscriptions' },
+    { label: 'Games', value: fmtMoney(d.games_spent), hint: `${d.game_count} bought` },
+    { label: 'Average game', value: fmtMoney(d.avg_price), hint: 'per purchase' },
+  ];
+  if (d.sub_count) {
+    tiles.push({ label: 'Gaming subs', value: fmtMoney(d.sub_spent),
+                 hint: d.sub_monthly ? `${fmtMoney(d.sub_monthly)}/mo active` : 'none active' });
+  }
+
+  const maxSource = Math.max(1, ...d.by_source.map(x => x.spent));
+  const bySource = d.by_source.length ? d.by_source.map(x => `
+    <div class="bar-row">
+      <span class="bar-label">${escHtml(x.name)}</span>
+      <span class="bar-track"><span class="bar-fill" style="width:${Math.round((x.spent / maxSource) * 100)}%"></span></span>
+      <span class="bar-val">${fmtMoney(x.spent)}</span>
+    </div>`).join('') : '<div class="muted-text" style="padding:8px 2px">No purchases yet.</div>';
+
+  const maxYear = Math.max(1, ...d.by_year.map(x => x.spent));
+  const byYear = d.by_year.length ? d.by_year.map(x => `
+    <div class="bar-row">
+      <span class="bar-label">${escHtml(x.year)}</span>
+      <span class="bar-track"><span class="bar-fill" style="width:${Math.round((x.spent / maxYear) * 100)}%"></span></span>
+      <span class="bar-val">${fmtMoney(x.spent)}</span>
+    </div>`).join('') : '';
+
+  const games = d.recent.length ? d.recent.map(g => `
+    <div class="up-row game-row" data-game-id="${g.id}">
+      <span class="up-name">${escHtml(g.name)}${g.source ? ` <span class="muted-text">· ${escHtml(g.source)}</span>` : ''}</span>
+      <span class="up-date">${g.purchased_on ? fmtDate(g.purchased_on) : '<span class="muted-text">date unknown</span>'}</span>
+      <span class="up-amt">${fmtMoney(g.price)}</span>
+    </div>`).join('') : '<div class="muted-text" style="padding:8px 2px">No games yet.</div>';
+
+  viewEl.innerHTML = `
+    <div class="stat-grid">
+      ${tiles.map(t => `<div class="stat-tile">
+        <div class="stat-label">${t.label}</div>
+        <div class="stat-value">${t.value}</div>
+        <div class="stat-hint">${t.hint}</div>
+      </div>`).join('')}
+    </div>
+    <div class="overview-cols">
+      <section class="panel">
+        <h3 class="panel-title">Recent purchases</h3>
+        <div class="up-list">${games}</div>
+      </section>
+      <section class="panel">
+        <h3 class="panel-title">Spend by store</h3>
+        <div class="bar-list">${bySource}</div>
+        ${byYear ? `<h3 class="panel-title" style="margin-top:18px">Spend by year</h3>
+        <div class="bar-list">${byYear}</div>` : ''}
+      </section>
+    </div>`;
+
+  viewEl.querySelectorAll('.game-row').forEach(r => r.addEventListener('click', async () => {
+    const list = await (await fetch('/api/games')).json();
+    const g = (list.items || []).find(x => String(x.id) === r.dataset.gameId);
+    if (g) window.openGameForm(g);
+  }));
 }
 
 // ── List views (all | upcoming | category) ────────────────────────────────────

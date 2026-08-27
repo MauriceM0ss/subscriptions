@@ -19,6 +19,14 @@ SEED_CATEGORIES = ("Media", "Productivity", "Gaming")
 # totals, and instead accumulate one logged charge per month actually used.
 ONE_TIME_CATEGORY = "One Time Subscriptions"
 
+# Games are one-off purchases, not subscriptions: bought once, owned forever,
+# no renewal and no price to track over time. They live in their own table and
+# are reported through the Gaming overview alongside gaming subscriptions.
+GAME_SOURCES = ("Steam", "Instant Gaming", "Rockstar", "Bethesda", "Blizzard", "GOG")
+
+# The subscription category whose spend is folded into the Gaming overview.
+GAMING_CATEGORY = "Gaming"
+
 # Money shown throughout the UI. Just a display symbol — no conversion happens.
 DEFAULT_CURRENCY = os.environ.get("CURRENCY", "€")   # €
 

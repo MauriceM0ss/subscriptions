@@ -72,6 +72,43 @@
   </header>
 
   <!-- ── Add / edit subscription modal ──────────────────────────────────── -->
+  <!-- Games are one-off purchases, so the form is deliberately small: what it
+       was, where it came from, what it cost and when. -->
+  <div class="modal-backdrop" id="game-backdrop" hidden>
+    <div class="modal" role="dialog" aria-modal="true">
+      <h2 class="modal-title" id="game-modal-title">Add a game</h2>
+      <input type="hidden" id="game-id">
+      <div class="form-grid">
+        <label class="field field--full">Title
+          <input type="text" id="game-name" class="modal-input" placeholder="e.g. Baldur's Gate 3" autocomplete="off">
+        </label>
+        <label class="field">Bought from
+          <select id="game-source" class="modal-input">
+            <option value="">— unknown —</option>
+          </select>
+        </label>
+        <label class="field">
+          <span class="field-cap">Price (<span class="cur-sym">€</span>)</span>
+          <input type="number" id="game-price" class="modal-input" min="0" step="0.01" placeholder="0.00">
+        </label>
+        <label class="field field--full">Purchase date
+          <input type="date" id="game-date" class="modal-input">
+          <span class="field-hint">Leave blank if you no longer remember — it still counts towards the total.</span>
+        </label>
+        <label class="field field--full">Notes
+          <textarea id="game-notes" class="modal-input" rows="2" placeholder="Optional"></textarea>
+        </label>
+      </div>
+      <p class="modal-error" id="game-error" hidden></p>
+      <div class="modal-actions">
+        <button class="btn-danger-sm" id="game-delete" hidden>Delete</button>
+        <span style="flex:1"></span>
+        <button class="btn-secondary" id="game-cancel">Cancel</button>
+        <button class="btn-primary" id="game-save">Save</button>
+      </div>
+    </div>
+  </div>
+
   <div class="modal-backdrop" id="sub-backdrop" hidden>
     <div class="modal" role="dialog" aria-modal="true">
       <h2 class="modal-title" id="sub-modal-title">Add a subscription</h2>
@@ -430,6 +467,7 @@
       { scope: 'overview', icon: '▦', label: 'Overview', count: '' },
       { scope: 'all', icon: '≣', label: 'All subscriptions', count: t.all || 0 },
       { scope: 'upcoming', icon: '↻', label: 'Upcoming renewals', count: t.upcoming || 0 },
+      { scope: 'gaming', icon: '◈', label: 'Gaming', count: t.games || 0 },
     ];
     q.innerHTML = '';
     links.forEach(l => {
@@ -532,6 +570,78 @@
   function syncCurrencySymbols() {
     document.querySelectorAll('.cur-sym').forEach(el => el.textContent = CURRENCY);
   }
+
+  // ── Add / edit game form ──────────────────────────────────────────────────
+  const gameBackdrop = document.getElementById('game-backdrop');
+  const gameErr = document.getElementById('game-error');
+  let GAME_SOURCES = [];
+
+  function fillGameSources(selected) {
+    const sel = document.getElementById('game-source');
+    sel.innerHTML = '<option value="">— unknown —</option>';
+    for (const src of GAME_SOURCES) {
+      const o = document.createElement('option');
+      o.value = src; o.textContent = src;
+      sel.appendChild(o);
+    }
+    sel.value = selected || '';
+  }
+
+  window.openGameForm = async function (game) {
+    gameErr.hidden = true;
+    if (!GAME_SOURCES.length) {
+      try {
+        const d = await (await fetch('/api/games')).json();
+        GAME_SOURCES = d.sources || [];
+      } catch (e) { GAME_SOURCES = []; }
+    }
+    const editing = !!game;
+    document.getElementById('game-modal-title').textContent = editing ? 'Edit game' : 'Add a game';
+    document.getElementById('game-id').value = editing ? game.id : '';
+    document.getElementById('game-name').value = editing ? (game.name || '') : '';
+    document.getElementById('game-price').value = editing && game.price != null ? game.price : '';
+    document.getElementById('game-date').value = editing ? (game.purchased_on || '') : '';
+    document.getElementById('game-notes').value = editing ? (game.notes || '') : '';
+    fillGameSources(editing ? game.source : '');
+    document.getElementById('game-delete').hidden = !editing;
+    syncCurrencySymbols();
+    gameBackdrop.hidden = false;
+    document.getElementById('game-name').focus();
+  };
+
+  document.getElementById('game-cancel').addEventListener('click', () => { gameBackdrop.hidden = true; });
+
+  document.getElementById('game-save').addEventListener('click', async () => {
+    const id = document.getElementById('game-id').value;
+    const body = {
+      name: document.getElementById('game-name').value.trim(),
+      source: document.getElementById('game-source').value,
+      price: document.getElementById('game-price').value,
+      purchased_on: document.getElementById('game-date').value,
+      notes: document.getElementById('game-notes').value.trim(),
+    };
+    if (!body.name) { gameErr.textContent = 'Title is required.'; gameErr.hidden = false; return; }
+    const r = await fetch(id ? '/api/games/' + id : '/api/games', { method: id ? 'PUT' : 'POST',
+      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const d = await r.json();
+    if (!r.ok) { gameErr.textContent = d.error || 'Something went wrong.'; gameErr.hidden = false; return; }
+    gameBackdrop.hidden = true;
+    await loadTree();
+    window.selectScope('gaming', null, 'Gaming');
+  });
+
+  document.getElementById('game-delete').addEventListener('click', async () => {
+    const id = document.getElementById('game-id').value;
+    if (!id) return;
+    const name = document.getElementById('game-name').value.trim() || 'this game';
+    if (!await confirmDialog({ title: 'Delete game',
+      message: `Remove ${name} from your library? This only affects your spending record.`,
+      confirmLabel: 'Delete', danger: true })) return;
+    await fetch('/api/games/' + id, { method: 'DELETE' });
+    gameBackdrop.hidden = true;
+    await loadTree();
+    window.selectScope('gaming', null, 'Gaming');
+  });
 
   // ── Add / edit subscription form ──────────────────────────────────────────
   const subBackdrop = document.getElementById('sub-backdrop');

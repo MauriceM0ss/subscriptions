@@ -529,6 +529,23 @@ a { color: inherit; text-decoration: none; }
 .ph-up { color: var(--danger); font-weight: 700; }
 .ph-down { color: var(--success); font-weight: 700; }
 
+/* ── Gaming overview ─────────────────────────────────────────────────────── */
+/* Recent purchases reuse .up-row, which is a 4-column renewal row; a game has
+   no "when" chip, so its three columns need their own template. minmax(0, 1fr)
+   rather than 1fr: a plain fr track will not shrink below its content, which
+   squeezed the date column to nothing on a narrow screen. */
+.up-row.game-row { grid-template-columns: minmax(0, 1fr) auto auto; cursor: pointer; }
+.up-row.game-row:hover { background: var(--surface2); }
+/* On narrow screens .up-date is hidden for renewal rows, where the "in 19d"
+   chip already carries the timing. A game row has no chip, so its date is the
+   only temporal information there is — give the title its own line and keep
+   the date and price on the second, rather than dropping the date. */
+@media (max-width: 620px) {
+  .up-row.game-row { grid-template-columns: 1fr auto; row-gap: 2px; }
+  .up-row.game-row .up-name { grid-column: 1 / -1; white-space: normal; }
+  .up-row.game-row .up-date { display: block; }
+}
+
 /* ── One-time usage ticker ───────────────────────────────────────────────── */
 .usage-actions { margin-top: 14px; }
 .usage-row .ph-delta { min-width: 0; }
