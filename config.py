@@ -13,6 +13,12 @@ DB_PATH = Path(os.environ.get("DB_PATH", "/data/subscriptions.db"))
 # Categories the taxonomy starts with on first run; fully editable afterwards.
 SEED_CATEGORIES = ("Media", "Productivity", "Gaming")
 
+# Subscriptions in a "one-time" category are not recurring commitments: they are
+# switched on for a single month whenever they are needed (a mod host used once
+# a year, say). They are excluded from the per-month, per-year and spent-so-far
+# totals, and instead accumulate one logged charge per month actually used.
+ONE_TIME_CATEGORY = "One Time Subscriptions"
+
 # Money shown throughout the UI. Just a display symbol — no conversion happens.
 DEFAULT_CURRENCY = os.environ.get("CURRENCY", "€")   # €
 

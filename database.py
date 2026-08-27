@@ -21,7 +21,8 @@ def init_db():
             CREATE TABLE IF NOT EXISTS categories (
                 id         INTEGER PRIMARY KEY AUTOINCREMENT,
                 name       TEXT    NOT NULL UNIQUE,
-                sort_order INTEGER NOT NULL DEFAULT 0
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                one_time   INTEGER NOT NULL DEFAULT 0
             );
             CREATE TABLE IF NOT EXISTS subscriptions (
                 id             INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -61,6 +62,19 @@ def init_db():
             );
             CREATE INDEX IF NOT EXISTS idx_period_sub ON activation_periods(sub_id);
 
+            -- One row per month a one-time subscription was actually switched on.
+            -- A ticker, not a period: each row is a single charge at the price
+            -- that applied when it was logged, so re-reading history can never
+            -- accrue extra months for a subscription left switched on.
+            CREATE TABLE IF NOT EXISTS usage_charges (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                sub_id     INTEGER NOT NULL REFERENCES subscriptions(id) ON DELETE CASCADE,
+                charged_on TEXT    NOT NULL,                         -- ISO date logged
+                amount     REAL    NOT NULL,
+                note       TEXT    NOT NULL DEFAULT ''
+            );
+            CREATE INDEX IF NOT EXISTS idx_usage_sub ON usage_charges(sub_id);
+
             CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
             """
         )
@@ -71,6 +85,25 @@ def init_db():
             conn.executemany(
                 "INSERT INTO categories (name, sort_order) VALUES (?, ?)",
                 [(name, i) for i, name in enumerate(config.SEED_CATEGORIES)])
+        _ensure_one_time_category(conn)
+
+
+def _ensure_one_time_category(conn):
+    """Make sure the one-time category exists and is flagged as such.
+
+    Created on every install rather than only fresh ones, so an existing
+    database gains it on upgrade. Only ever adds the flag: a category the user
+    renamed or re-flagged themselves is left alone.
+    """
+    row = conn.execute("SELECT id, one_time FROM categories WHERE name = ?",
+                       (config.ONE_TIME_CATEGORY,)).fetchone()
+    if row is None:
+        nxt = conn.execute(
+            "SELECT COALESCE(MAX(sort_order), -1) + 1 AS n FROM categories").fetchone()["n"]
+        conn.execute("INSERT INTO categories (name, sort_order, one_time) VALUES (?, ?, 1)",
+                     (config.ONE_TIME_CATEGORY, nxt))
+    elif not row["one_time"]:
+        conn.execute("UPDATE categories SET one_time = 1 WHERE id = ?", (row["id"],))
 
 
 def _migrate(conn):
@@ -79,6 +112,10 @@ def _migrate(conn):
     Adds the payment_method / necessity columns to pre-existing installs and
     backfills a starting price_history entry and an activation_period for every
     subscription that doesn't have them yet (so the derived totals keep working)."""
+    cat_cols = {r["name"] for r in conn.execute("PRAGMA table_info(categories)")}
+    if "one_time" not in cat_cols:
+        conn.execute("ALTER TABLE categories ADD COLUMN one_time INTEGER NOT NULL DEFAULT 0")
+
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(subscriptions)")}
     if "payment_method" not in cols:
         conn.execute("ALTER TABLE subscriptions ADD COLUMN payment_method TEXT NOT NULL DEFAULT ''")
