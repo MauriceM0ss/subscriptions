@@ -75,6 +75,20 @@ def init_db():
             );
             CREATE INDEX IF NOT EXISTS idx_usage_sub ON usage_charges(sub_id);
 
+            -- One-off game purchases. Deliberately not subscriptions: bought
+            -- once at a price that never changes again, so there is no cycle,
+            -- no renewal and no price history to keep.
+            CREATE TABLE IF NOT EXISTS games (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                name         TEXT    NOT NULL,
+                source       TEXT    NOT NULL DEFAULT '',
+                price        REAL    NOT NULL DEFAULT 0,
+                purchased_on TEXT    NOT NULL DEFAULT '',       -- ISO date or ''
+                notes        TEXT    NOT NULL DEFAULT '',
+                created_at   TEXT    NOT NULL DEFAULT ''
+            );
+            CREATE INDEX IF NOT EXISTS idx_games_source ON games(source);
+
             CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
             """
         )

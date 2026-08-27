@@ -130,7 +130,10 @@ def test_export_and_reset(client):
     client.post("/api/reset")
     tree = client.get("/api/tree").get_json()
     assert tree["totals"]["all"] == 0
-    assert [c["name"] for c in tree["tree"]] == ["Media", "Productivity", "Gaming"]
+    # The one-time bucket is restored alongside the seeds; before it was, a
+    # reset left it missing until the next restart.
+    assert [c["name"] for c in tree["tree"]] == [
+        "Media", "Productivity", "Gaming", "One Time Subscriptions"]
 
 
 def test_csrf_cross_origin_blocked(client):
@@ -321,3 +324,100 @@ def test_export_includes_usage(client):
     client.post(f"/api/subscriptions/{sid}/usage", json={})
     d = client.get("/api/export").get_json()
     assert len(d["usage_charges"]) == 1
+
+
+# ── games ──────────────────────────────────────────────────────────────────
+def make_game(client, **over):
+    body = {"name": "Baldur's Gate 3", "source": "Steam",
+            "price": 59.99, "purchased_on": "2024-08-03"}
+    body.update(over)
+    return client.post("/api/games", json=body)
+
+
+def test_game_create_list_update_delete(client):
+    r = make_game(client)
+    assert r.status_code == 201
+    gid = r.get_json()["id"]
+
+    items = client.get("/api/games").get_json()["items"]
+    assert [g["name"] for g in items] == ["Baldur's Gate 3"]
+    assert items[0]["price"] == 59.99 and items[0]["source"] == "Steam"
+
+    assert client.put(f"/api/games/{gid}", json={"price": 49.99}).status_code == 200
+    assert client.get("/api/games").get_json()["items"][0]["price"] == 49.99
+
+    assert client.delete(f"/api/games/{gid}").status_code == 200
+    assert client.get("/api/games").get_json()["items"] == []
+    assert client.delete(f"/api/games/{gid}").status_code == 404
+
+
+def test_game_validation(client):
+    assert make_game(client, name="  ").status_code == 400
+    assert make_game(client, source="Epic").status_code == 400      # not an allowed source
+    assert make_game(client, price="free").status_code == 400
+    assert make_game(client, price=-5).status_code == 400
+    # A blank source is allowed — not every purchase remembers where it came from.
+    assert make_game(client, source="").status_code == 201
+
+
+def test_game_without_a_date_still_counts(client):
+    """An old purchase whose date is forgotten must not be silently dropped."""
+    make_game(client, purchased_on="", price=20.0)
+    make_game(client, name="Hades", purchased_on="2023-01-05", price=10.0)
+    d = client.get("/api/gaming-overview").get_json()
+    assert d["games_spent"] == 30.0 and d["game_count"] == 2
+    # ...it just cannot appear in the by-year split.
+    assert [y["year"] for y in d["by_year"]] == ["2023"]
+    assert sum(y["spent"] for y in d["by_year"]) == 10.0
+
+
+def test_gaming_overview_totals(client):
+    make_game(client, name="BG3", source="Steam", price=59.99, purchased_on="2024-08-03")
+    make_game(client, name="Hades", source="GOG", price=19.99, purchased_on="2023-05-01")
+    make_game(client, name="RDR2", source="Rockstar", price=29.99, purchased_on="2024-02-10")
+
+    d = client.get("/api/gaming-overview").get_json()
+    assert d["game_count"] == 3
+    assert d["games_spent"] == 109.97
+    assert d["avg_price"] == 36.66
+    assert [s["name"] for s in d["by_source"]] == ["Steam", "Rockstar", "GOG"]
+    assert [y["year"] for y in d["by_year"]] == ["2023", "2024"]
+    assert dict((y["year"], y["spent"]) for y in d["by_year"]) == {"2023": 19.99, "2024": 89.98}
+    assert [g["name"] for g in d["recent"]][0] == "BG3"          # newest first
+
+
+def test_gaming_overview_includes_gaming_subscriptions(client):
+    """The point of the view is what gaming costs, not what games cost."""
+    tree = client.get("/api/tree").get_json()
+    gaming = next(c["id"] for c in tree["tree"] if c["name"] == "Gaming")
+    make_sub(client, name="Game Pass", category_id=gaming, amount=12.99,
+             start_date="2026-01-01", renew_date="2030-01-01")
+    make_game(client, price=59.99)
+
+    d = client.get("/api/gaming-overview").get_json()
+    assert d["sub_count"] == 1 and d["sub_monthly"] == 12.99
+    assert d["sub_spent"] > 0
+    assert d["total_spent"] == round(d["games_spent"] + d["sub_spent"], 2)
+    # A subscription in another category stays out of it.
+    make_sub(client, name="Netflix", category_id=1)
+    assert client.get("/api/gaming-overview").get_json()["sub_count"] == 1
+
+
+def test_gaming_overview_empty(client):
+    d = client.get("/api/gaming-overview").get_json()
+    assert d["game_count"] == 0 and d["games_spent"] == 0 and d["avg_price"] == 0
+    assert d["by_source"] == [] and d["by_year"] == []
+
+
+def test_reset_clears_games_and_restores_one_time_category(client):
+    make_game(client)
+    client.post("/api/reset", json={})
+    assert client.get("/api/games").get_json()["items"] == []
+    # Re-seeding must put the one-time bucket back, not wait for a restart.
+    names = [c["name"] for c in client.get("/api/tree").get_json()["tree"]]
+    assert "One Time Subscriptions" in names
+
+
+def test_export_includes_games(client):
+    make_game(client)
+    assert len(client.get("/api/export").get_json()["games"]) == 1
