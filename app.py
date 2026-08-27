@@ -129,16 +129,20 @@ def _periods_prices(conn):
     for r in conn.execute("SELECT sub_id, amount, changed_on FROM price_history ORDER BY changed_on"):
         prices.setdefault(r["sub_id"], []).append(
             (subscriptions.parse_date(r["changed_on"]), float(r["amount"])))
-    return periods, prices
+    usages = {}
+    for r in conn.execute("SELECT sub_id, amount FROM usage_charges ORDER BY charged_on, id"):
+        usages.setdefault(r["sub_id"], []).append(float(r["amount"]))
+    return periods, prices, usages
 
 
 def _all_enriched(conn, today, where="", params=()):
     rows = conn.execute(
-        "SELECT sub.*, c.name AS category_name FROM subscriptions sub "
+        "SELECT sub.*, c.name AS category_name, c.one_time AS one_time FROM subscriptions sub "
         "LEFT JOIN categories c ON c.id = sub.category_id "
         + where + " ORDER BY sub.sort_order, sub.name COLLATE NOCASE", params).fetchall()
-    periods, prices = _periods_prices(conn)
-    return [subscriptions.enrich(r, today, periods.get(r["id"], []), prices.get(r["id"], []))
+    periods, prices, usages = _periods_prices(conn)
+    return [subscriptions.enrich(r, today, periods.get(r["id"], []), prices.get(r["id"], []),
+                                 usages.get(r["id"], []))
             for r in rows]
 
 
@@ -204,18 +208,28 @@ def api_tree():
         by_cat.setdefault(s["category_id"], []).append({
             "id": s["id"], "name": s["name"],
             "category_id": s["category_id"], "active": s["active"],
+            "one_time": s["one_time"], "total_spent": s["total_spent"],
             "monthly_cost": s["monthly_cost"], "days_until_renew": s["days_until_renew"],
         })
     tree = []
     for c in cats:
         csubs = sorted(by_cat.get(c["id"], []), key=lambda x: (x["name"] or "").lower())
+        one_time = bool(c["one_time"])
         tree.append({
             "id": c["id"], "name": c["name"], "subs": csubs, "count": len(csubs),
-            "monthly": round(sum(x["monthly_cost"] for x in csubs if x["active"]), 2),
+            "one_time": one_time,
+            # A one-time category has no monthly commitment; show what it has
+            # actually cost instead, so the row is not a permanent 0.00/mo.
+            "monthly": 0 if one_time else round(
+                sum(x["monthly_cost"] for x in csubs if x["active"]), 2),
+            "spent": round(sum(x["total_spent"] for x in csubs), 2) if one_time else None,
         })
 
-    active = [s for s in subs if s["active"]]
-    upcoming = [s for s in subs if s["active"] and s["days_until_renew"] is not None
+    # One-time subscriptions are excluded here for the same reason as in the
+    # overview: they are not a recurring commitment being carried.
+    active = [s for s in subs if s["active"] and not s["one_time"]]
+    upcoming = [s for s in subs if s["active"] and not s["one_time"]
+                and s["days_until_renew"] is not None
                 and 0 <= s["days_until_renew"] <= config.UPCOMING_DAYS]
     return jsonify({
         "tree": tree,
@@ -236,7 +250,11 @@ def api_overview():
     today = config.today()
     with db() as conn:
         subs = _all_enriched(conn, today)
-    active = [s for s in subs if s["active"]]
+    # One-time subscriptions are not recurring commitments, so they stay out of
+    # every aggregate here and are reported on their own instead.
+    recurring = [s for s in subs if not s["one_time"]]
+    one_time = [s for s in subs if s["one_time"]]
+    active = [s for s in recurring if s["active"]]
 
     by_cat = {}
     for s in active:
@@ -250,7 +268,10 @@ def api_overview():
         "currency": get_currency(),
         "monthly_total": round(sum(s["monthly_cost"] for s in active), 2),
         "yearly_total": round(sum(s["yearly_cost"] for s in active), 2),
-        "total_spent": round(sum(s["total_spent"] for s in subs), 2),
+        "total_spent": round(sum(s["total_spent"] for s in recurring), 2),
+        "one_time_spent": round(sum(s["total_spent"] for s in one_time), 2),
+        "one_time_charges": sum(s["charges"] for s in one_time),
+        "one_time_count": len(one_time),
         "active_count": len(active),
         "total_count": len(subs),
         "by_category": sorted(
@@ -287,10 +308,13 @@ def api_subs_list():
 def api_sub_get(sid):
     with db() as conn:
         r = conn.execute(
-            "SELECT sub.*, c.name AS category_name FROM subscriptions sub "
+            "SELECT sub.*, c.name AS category_name, c.one_time AS one_time FROM subscriptions sub "
             "LEFT JOIN categories c ON c.id = sub.category_id WHERE sub.id=?", (sid,)).fetchone()
         if not r:
             return jsonify({"error": "Subscription not found."}), 404
+        usage_rows = conn.execute(
+            "SELECT id, charged_on, amount, note FROM usage_charges "
+            "WHERE sub_id=? ORDER BY charged_on DESC, id DESC", (sid,)).fetchall()
         price_rows = conn.execute(
             "SELECT amount, billing_cycle, changed_on, note FROM price_history "
             "WHERE sub_id=? ORDER BY changed_on, id", (sid,)).fetchall()
@@ -300,11 +324,48 @@ def api_sub_get(sid):
     periods = [(subscriptions.parse_date(p["started_on"]), subscriptions.parse_date(p["ended_on"]))
                for p in period_rows]
     prices = [(subscriptions.parse_date(p["changed_on"]), float(p["amount"])) for p in price_rows]
-    out = subscriptions.enrich(r, config.today(), periods, prices)
+    out = subscriptions.enrich(r, config.today(), periods, prices,
+                               [row["amount"] for row in usage_rows])
     out["currency"] = get_currency()
     out["price_history"] = [dict(p) for p in price_rows]
     out["periods"] = [dict(p) for p in period_rows]
+    out["usage"] = [dict(u) for u in usage_rows]
     return jsonify(out)
+
+
+# ── API: one-time usage ticker ────────────────────────────────────────────────
+@app.route("/api/subscriptions/<int:sid>/usage", methods=["POST"])
+def api_usage_log(sid):
+    """Log one month of use, at today's date and the price in effect now.
+
+    The amount is copied rather than referenced, so editing the price later
+    leaves everything already logged untouched."""
+    payload = request.get_json(silent=True) or {}
+    with db() as conn:
+        row = conn.execute(
+            "SELECT sub.amount, c.one_time FROM subscriptions sub "
+            "LEFT JOIN categories c ON c.id = sub.category_id WHERE sub.id=?", (sid,)).fetchone()
+        if not row:
+            return jsonify({"error": "Subscription not found."}), 404
+        if not row["one_time"]:
+            return jsonify({"error": "Only one-time subscriptions log months of use."}), 400
+        charged_on = str(payload.get("charged_on") or "")[:10]
+        if not subscriptions.parse_date(charged_on):
+            charged_on = config.today().isoformat()
+        cur = conn.execute(
+            "INSERT INTO usage_charges (sub_id, charged_on, amount, note) VALUES (?, ?, ?, ?)",
+            (sid, charged_on, float(row["amount"] or 0), str(payload.get("note") or "")[:200]))
+        new_id = cur.lastrowid
+    return jsonify({"ok": True, "id": new_id, "charged_on": charged_on})
+
+
+@app.route("/api/usage/<int:uid>", methods=["DELETE"])
+def api_usage_delete(uid):
+    with db() as conn:
+        cur = conn.execute("DELETE FROM usage_charges WHERE id=?", (uid,))
+        if not cur.rowcount:
+            return jsonify({"error": "Entry not found."}), 404
+    return jsonify({"ok": True})
 
 
 @app.route("/api/subscriptions", methods=["POST"])
@@ -400,22 +461,25 @@ def api_sub_delete(sid):
 # ── API: categories ───────────────────────────────────────────────────────────
 @app.route("/api/categories", methods=["POST"])
 def api_category_create():
-    name = (request.get_json(force=True).get("name") or "").strip()
+    payload = request.get_json(force=True)
+    name = (payload.get("name") or "").strip()
     if not name:
         return jsonify({"error": "Name required."}), 400
+    one_time = 1 if payload.get("one_time") else 0
     with db() as conn:
         try:
             cur = conn.execute(
-                "INSERT INTO categories (name, sort_order) VALUES "
-                "(?, (SELECT COALESCE(MAX(sort_order),0)+1 FROM categories))", (name,))
+                "INSERT INTO categories (name, sort_order, one_time) VALUES "
+                "(?, (SELECT COALESCE(MAX(sort_order),0)+1 FROM categories), ?)", (name, one_time))
         except sqlite3.IntegrityError:
             return jsonify({"error": "That category already exists."}), 400
-    return jsonify({"id": cur.lastrowid, "name": name})
+    return jsonify({"id": cur.lastrowid, "name": name, "one_time": bool(one_time)})
 
 
 @app.route("/api/categories/<int:cid>", methods=["PUT"])
 def api_category_update(cid):
-    name = (request.get_json(force=True).get("name") or "").strip()
+    payload = request.get_json(force=True)
+    name = (payload.get("name") or "").strip()
     if not name:
         return jsonify({"error": "Name required."}), 400
     with db() as conn:
@@ -423,6 +487,9 @@ def api_category_update(cid):
             conn.execute("UPDATE categories SET name=? WHERE id=?", (name, cid))
         except sqlite3.IntegrityError:
             return jsonify({"error": "That category already exists."}), 400
+        if "one_time" in payload:
+            conn.execute("UPDATE categories SET one_time=? WHERE id=?",
+                         (1 if payload["one_time"] else 0, cid))
     return jsonify({"ok": True})
 
 
@@ -485,6 +552,8 @@ def api_export():
             "SELECT * FROM price_history ORDER BY sub_id, changed_on, id").fetchall()]
         periods = [dict(r) for r in conn.execute(
             "SELECT * FROM activation_periods ORDER BY sub_id, started_on, id").fetchall()]
+        usage = [dict(r) for r in conn.execute(
+            "SELECT * FROM usage_charges ORDER BY sub_id, charged_on, id").fetchall()]
     payload = json.dumps({
         "exported_at": now_iso(),
         "currency": get_currency(),
@@ -492,6 +561,7 @@ def api_export():
         "subscriptions": subs,
         "price_history": price_history,
         "activation_periods": periods,
+        "usage_charges": usage,
     }, indent=2)
     return send_file(io.BytesIO(payload.encode("utf-8")), as_attachment=True,
                      download_name="subscriptions-export.json", mimetype="application/json")

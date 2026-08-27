@@ -58,8 +58,15 @@ async function renderOverview() {
     { label: 'Per month', value: fmtMoney(d.monthly_total), hint: 'active subscriptions' },
     { label: 'Per year', value: fmtMoney(d.yearly_total), hint: 'active subscriptions' },
     { label: 'Active', value: d.active_count, hint: `${d.total_count} total` },
-    { label: 'Spent so far', value: fmtMoney(d.total_spent), hint: 'all subscriptions, estimated' },
+    { label: 'Spent so far', value: fmtMoney(d.total_spent),
+      hint: d.one_time_count ? 'recurring only, estimated' : 'all subscriptions, estimated' },
   ];
+  // Kept out of "Spent so far" on purpose, but shown so the money is not
+  // invisible — one-time spend is real, it is just not a commitment.
+  if (d.one_time_count) {
+    tiles.push({ label: 'One-time', value: fmtMoney(d.one_time_spent),
+                 hint: `${d.one_time_charges} month${d.one_time_charges === 1 ? '' : 's'} used` });
+  }
 
   const upcoming = d.upcoming.length ? d.upcoming.map(s => `
     <div class="up-row ${renewClass(s.days_until_renew)}" data-id="${s.id}">
@@ -112,9 +119,12 @@ async function renderList(c) {
 
   if (!items.length) { viewEl.innerHTML = emptyState(c.scope); bindEmptyAdd(); return; }
 
-  const monthly = items.filter(s => s.active).reduce((a, s) => a + s.monthly_cost, 0);
-  const summary = c.scope === 'upcoming' ? '' :
-    `<div class="list-summary">${fmtMoney(monthly)}<span class="muted-text">/mo across active</span></div>`;
+  const allOneTime = items.length && items.every(s => s.one_time);
+  const monthly = items.filter(s => s.active && !s.one_time).reduce((a, s) => a + s.monthly_cost, 0);
+  const spent = items.filter(s => s.one_time).reduce((a, s) => a + s.total_spent, 0);
+  const summary = c.scope === 'upcoming' ? '' : (allOneTime
+    ? `<div class="list-summary">${fmtMoney(spent)}<span class="muted-text">&nbsp;spent across all months used</span></div>`
+    : `<div class="list-summary">${fmtMoney(monthly)}<span class="muted-text">/mo across active</span></div>`);
 
   viewEl.innerHTML = summary + '<div class="sub-list">' + items.map(subCard).join('') + '</div>';
   viewEl.querySelectorAll('.sub-card').forEach(el =>
@@ -124,22 +134,29 @@ async function renderList(c) {
 function subCard(s) {
   const renew = s.days_until_renew !== null && s.days_until_renew !== undefined
     ? `<span class="chip ${renewClass(s.days_until_renew)}">↻ ${renewLabel(s.days_until_renew)}</span>` : '';
-  return `<article class="sub-card${s.active ? '' : ' is-inactive'}" data-id="${s.id}" data-name="${escHtml(s.name)}">
+  // A one-time subscription carries no monthly cost, so showing "0.00/mo"
+  // would read as free. Show the per-use price and the running total instead.
+  const cost = s.one_time
+    ? `<div class="cost-primary">${fmtMoney(s.amount)}<span class="muted-text">/use</span></div>
+       <div class="cost-secondary">${fmtMoney(s.total_spent)} over ${s.charges} month${s.charges === 1 ? '' : 's'}</div>`
+    : `<div class="cost-primary">${fmtMoney(s.monthly_cost)}<span class="muted-text">/mo</span></div>
+       <div class="cost-secondary">${fmtMoney(s.yearly_cost)}/yr</div>`;
+  const meta = s.one_time
+    ? '<span class="chip chip-onetime">one-time</span>'
+    : `<span class="meta-sep">·</span><span>${s.billing_cycle}</span>${renew}`;
+  const dim = (!s.one_time && !s.active) ? ' is-inactive' : '';
+  return `<article class="sub-card${dim}" data-id="${s.id}" data-name="${escHtml(s.name)}">
     <div class="sub-card-main">
       <div class="sub-card-head">
         <span class="sub-card-name">${escHtml(s.name)}</span>
-        ${s.active ? '' : '<span class="chip chip-muted">inactive</span>'}
+        ${dim ? '<span class="chip chip-muted">inactive</span>' : ''}
       </div>
       <div class="sub-card-meta">
         <span class="cat-pill">${escHtml(s.category_name || 'Uncategorized')}</span>
-        <span class="meta-sep">·</span><span>${s.billing_cycle}</span>
-        ${renew}
+        ${meta}
       </div>
     </div>
-    <div class="sub-card-cost">
-      <div class="cost-primary">${fmtMoney(s.monthly_cost)}<span class="muted-text">/mo</span></div>
-      <div class="cost-secondary">${fmtMoney(s.yearly_cost)}/yr</div>
-    </div>
+    <div class="sub-card-cost">${cost}</div>
   </article>`;
 }
 
@@ -153,7 +170,19 @@ function necessityChip(nec) {
 // Timeline of recorded prices (newest first), with the change vs the prior price.
 function priceHistorySection(s) {
   const ph = s.price_history || [];
-  if (ph.length <= 1) return '';
+  if (!ph.length) return '';
+  // Shown even with a single recorded price: an empty-looking panel is how you
+  // learn the history exists and is being kept.
+  if (ph.length === 1) {
+    return `<section class="panel ph-panel">
+      <h3 class="panel-title">Price history</h3>
+      <div class="ph-list"><div class="ph-row">
+        <span class="ph-date">${fmtDate(ph[0].changed_on)}</span>
+        <span class="ph-amt">${fmtMoney(ph[0].amount)}<span class="muted-text">/${ph[0].billing_cycle === 'yearly' ? 'yr' : 'mo'}</span></span>
+        <span class="ph-delta"><span class="muted-text">first price — no changes yet</span></span>
+      </div></div>
+    </section>`;
+  }
   const rows = ph.slice().reverse().map((p, i, arr) => {
     const prev = arr[i + 1];                       // chronologically-earlier entry
     let delta = '';
@@ -175,6 +204,28 @@ function priceHistorySection(s) {
   </section>`;
 }
 
+// Months a one-time subscription was actually switched on. Each row is a
+// charge at the price that applied when it was logged.
+function usageSection(s) {
+  if (!s.one_time) return '';
+  const rows = (s.usage || []).map(u => `<div class="ph-row usage-row" data-usage-id="${u.id}">
+      <span class="ph-date">${fmtDate(u.charged_on)}</span>
+      <span class="ph-amt">${fmtMoney(u.amount)}</span>
+      <span class="ph-delta"><button class="usage-del" data-usage-id="${u.id}" title="Remove this month">✕</button></span>
+    </div>`).join('');
+  return `<section class="panel ph-panel">
+    <h3 class="panel-title">Months used
+      <span class="chip chip-muted">${s.charges}</span>
+    </h3>
+    <p class="settings-desc">Log a month each time you switch this on. Only these
+      months are counted — nothing accrues while you are not using it.</p>
+    <div class="ph-list">${rows || '<div class="muted-text" style="padding:8px 2px">No months logged yet.</div>'}</div>
+    <div class="usage-actions">
+      <button class="btn-primary btn-sm" id="usage-log">＋ Log a month (${fmtMoney(s.amount)})</button>
+    </div>
+  </section>`;
+}
+
 // ── Detail view ───────────────────────────────────────────────────────────────
 async function renderDetail(id) {
   const s = await (await fetch('/api/subscriptions/' + id)).json();
@@ -187,7 +238,16 @@ async function renderDetail(id) {
   const renewRow = s.active
     ? `${fmtDate(s.next_renewal)} <span class="chip ${renewClass(s.days_until_renew)}">${renewLabel(s.days_until_renew)}</span>`
     : '<span class="muted-text">— paused</span>';
-  const rows = [
+  // A one-time subscription has no cycle, start date or renewal — it is only
+  // ever a price per month used, plus the months actually used.
+  const rows = s.one_time ? [
+    ['Category', escHtml(s.category_name || 'Uncategorized')],
+    ['Price per month used', fmtMoney(s.amount)],
+    ['Payment method', s.payment_method ? escHtml(s.payment_method) : '<span class="muted-text">—</span>'],
+    ['Necessity', necessityChip(s.necessity)],
+    ['Months used', `${s.charges}`],
+    ['Total spent', `${fmtMoney(s.total_spent)} <span class="muted-text">(excluded from the overview totals)</span>`],
+  ] : [
     ['Category', escHtml(s.category_name || 'Uncategorized')],
     ['Billing cycle', s.billing_cycle],
     ['Amount', `${fmtMoney(s.amount)} / ${s.billing_cycle === 'yearly' ? 'year' : 'month'}`],
@@ -200,12 +260,15 @@ async function renderDetail(id) {
     ['Total spent so far', `${fmtMoney(s.total_spent)} <span class="muted-text">(${s.charges} charge${s.charges === 1 ? '' : 's'})</span>`],
   ];
 
-  const statusChip = s.active
-    ? '<span class="chip chip-ok">● Active</span>'
-    : '<span class="chip chip-muted">● Inactive</span>';
-  const toggleBtn = s.active
+  const statusChip = s.one_time
+    ? '<span class="chip chip-onetime">● One-time</span>'
+    : (s.active ? '<span class="chip chip-ok">● Active</span>'
+                : '<span class="chip chip-muted">● Inactive</span>');
+  // One-time subscriptions have no on/off state to carry — the ticker is the
+  // only thing that means anything, so the toggle would just mislead.
+  const toggleBtn = s.one_time ? '' : (s.active
     ? '<button class="btn-secondary btn-sm" id="detail-toggle">Disable</button>'
-    : '<button class="btn-primary btn-sm" id="detail-toggle">Enable</button>';
+    : '<button class="btn-primary btn-sm" id="detail-toggle">Enable</button>');
 
   viewEl.innerHTML = `
     <div class="detail-card">
@@ -218,16 +281,41 @@ async function renderDetail(id) {
         </div>
       </div>
       <div class="detail-cost-row">
+        ${s.one_time ? `
+        <div class="detail-cost"><span class="dc-value">${fmtMoney(s.amount)}</span><span class="dc-label">per month used</span></div>
+        <div class="detail-cost"><span class="dc-value">${s.charges}</span><span class="dc-label">month${s.charges === 1 ? '' : 's'} used</span></div>
+        <div class="detail-cost"><span class="dc-value">${fmtMoney(s.total_spent)}</span><span class="dc-label">spent so far</span></div>
+        ` : `
         <div class="detail-cost"><span class="dc-value">${fmtMoney(s.monthly_cost)}</span><span class="dc-label">per month</span></div>
         <div class="detail-cost"><span class="dc-value">${fmtMoney(s.yearly_cost)}</span><span class="dc-label">per year</span></div>
         <div class="detail-cost"><span class="dc-value">${fmtMoney(s.total_spent)}</span><span class="dc-label">spent so far</span></div>
+        `}
       </div>
       <dl class="detail-list">
         ${rows.map(([k, v]) => `<div class="detail-row"><dt>${k}</dt><dd>${v}</dd></div>`).join('')}
         ${s.notes ? `<div class="detail-row"><dt>Notes</dt><dd>${escHtml(s.notes)}</dd></div>` : ''}
       </dl>
+      ${usageSection(s)}
       ${priceHistorySection(s)}
     </div>`;
+
+  const logBtn = document.getElementById('usage-log');
+  if (logBtn) logBtn.addEventListener('click', async () => {
+    logBtn.disabled = true;
+    await fetch(`/api/subscriptions/${s.id}/usage`, { method: 'POST',
+      headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    await window.loadTree();
+    renderDetail(id);
+  });
+  viewEl.querySelectorAll('.usage-del').forEach(btn => btn.addEventListener('click', async () => {
+    if (!await confirmDialog({ title: 'Remove this month?',
+      message: 'This logged month will no longer count towards the total.',
+      confirmLabel: 'Remove', danger: true })) return;
+    btn.disabled = true;
+    await fetch('/api/usage/' + btn.dataset.usageId, { method: 'DELETE' });
+    await window.loadTree();
+    renderDetail(id);
+  }));
 
   const toggle = document.getElementById('detail-toggle');
   if (toggle) toggle.addEventListener('click', async () => {

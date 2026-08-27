@@ -83,7 +83,7 @@
         <label class="field">Category
           <select id="sub-category" class="modal-input"></select>
         </label>
-        <label class="field">Billing cycle
+        <label class="field" id="sub-cycle-field">Billing cycle
           <select id="sub-cycle" class="modal-input">
             <option value="monthly">Monthly</option>
             <option value="yearly">Yearly</option>
@@ -108,10 +108,10 @@
             <option value="Critical">Critical</option>
           </select>
         </label>
-        <label class="field">Start date
+        <label class="field" id="sub-start-field">Start date
           <input type="date" id="sub-start" class="modal-input">
         </label>
-        <label class="field">Renew date
+        <label class="field" id="sub-renew-field">Renew date
           <input type="date" id="sub-renew" class="modal-input">
           <span class="field-hint">Leave blank to auto-set to start&nbsp;+&nbsp;one cycle.</span>
         </label>
@@ -468,15 +468,19 @@
       subUl.className = 'tree-items-list';
       if (!open) subUl.hidden = true;
       for (const s of cat.subs) {
+        // A one-time subscription has no monthly cost and no on/off state to
+        // grey out; its running total is the useful figure to show here.
         const fl = document.createElement('div');
-        fl.className = 'tree-item-link tree-feed-row' + (s.active ? '' : ' is-inactive');
+        fl.className = 'tree-item-link tree-feed-row' +
+          ((s.one_time || s.active) ? '' : ' is-inactive');
         fl.dataset.scope = 'subscription'; fl.dataset.id = s.id;
-        fl.title = fmtMoney(s.monthly_cost) + '/mo';
-        const badge = (s.days_until_renew !== null && s.days_until_renew !== undefined && s.days_until_renew <= 7)
+        fl.title = s.one_time ? fmtMoney(s.total_spent) + ' spent so far'
+                              : fmtMoney(s.monthly_cost) + '/mo';
+        const badge = (!s.one_time && s.days_until_renew !== null && s.days_until_renew !== undefined && s.days_until_renew <= 7)
           ? `<span class="renew-dot ${renewClass(s.days_until_renew)}" title="Renews ${renewLabel(s.days_until_renew)}"></span>` : '';
         fl.innerHTML =
           `<span class="feed-name">${escHtml(s.name)}</span>${badge}` +
-          `<span class="q-count">${fmtMoney(s.monthly_cost)}</span>`;
+          `<span class="q-count">${fmtMoney(s.one_time ? s.total_spent : s.monthly_cost)}</span>`;
         fl.addEventListener('click', () => window.selectScope('subscription', s.id, s.name));
         subUl.appendChild(fl);
       }
@@ -534,7 +538,8 @@
   const subErr = document.getElementById('sub-error');
   const cycleSel = document.getElementById('sub-cycle');
   const cycleWord = document.getElementById('sub-cycle-word');
-  cycleSel.addEventListener('change', () => { cycleWord.textContent = cycleSel.value === 'yearly' ? 'year' : 'month'; });
+  cycleSel.addEventListener('change', () => { syncOneTimeFields(); });
+  document.getElementById('sub-category').addEventListener('change', syncOneTimeFields);
 
   function fillCategorySelect(selectedId) {
     const sel = document.getElementById('sub-category');
@@ -542,9 +547,29 @@
     for (const c of TREE.tree) {
       const o = document.createElement('option');
       o.value = c.id; o.textContent = c.name;
+      o.dataset.oneTime = c.one_time ? '1' : '';
       sel.appendChild(o);
     }
     if (selectedId != null) sel.value = selectedId;
+    syncOneTimeFields();
+  }
+
+  // A one-time subscription is not billed on a cycle and never renews, so
+  // those fields would only invite meaningless input. The amount becomes a
+  // price per month used, charged each time a month is logged.
+  function syncOneTimeFields() {
+    const sel = document.getElementById('sub-category');
+    const opt = sel.options[sel.selectedIndex];
+    const oneTime = !!(opt && opt.dataset.oneTime);
+    for (const fid of ['sub-cycle-field', 'sub-start-field', 'sub-renew-field']) {
+      const el = document.getElementById(fid);
+      if (el) el.hidden = oneTime;
+    }
+    const activeRow = document.getElementById('sub-active-row');
+    if (oneTime && activeRow) activeRow.hidden = true;
+    if (oneTime) cycleSel.value = 'monthly';
+    cycleWord.textContent = oneTime ? 'month used'
+                                    : (cycleSel.value === 'yearly' ? 'year' : 'month');
   }
 
   // Open the form. Pass a subscription object to edit, or nothing to add.

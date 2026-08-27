@@ -109,33 +109,56 @@ def periods_spend(periods, prices, cycle, amount, today):
     return count, round(total, 2)
 
 
-def enrich(row, today, periods=None, prices=None):
+def usage_spend(usages):
+    """Count and total the logged months of a one-time subscription.
+
+    `usages` is a list of amounts, one per month actually switched on. Each is
+    stored at the price that applied when it was logged, so a later price
+    change never rewrites what was already paid."""
+    return len(usages), round(sum(float(a) for a in usages), 2)
+
+
+def enrich(row, today, periods=None, prices=None, usages=None):
     """Turn a subscriptions row into a plain dict with the derived fields added.
 
     When `periods` (list of (started, ended|None) dates) and `prices` (list of
     (changed_on, amount) dates) are supplied, `total_spent` reflects the months
     the subscription was actually switched on and the price history. Without
     them it falls back to the simple "charges since start × current price"
-    estimate."""
+    estimate.
+
+    A one-time subscription (one whose category is flagged `one_time`) ignores
+    all of that: it is not a recurring commitment, so it carries no monthly or
+    yearly cost and no renewal countdown, and its total is simply the months
+    logged against it in `usages`."""
     d = dict(row)
     cycle = (d.get("billing_cycle") or "monthly").lower()
     amount = float(d.get("amount") or 0)
     start = parse_date(d.get("start_date"))
     renew = parse_date(d.get("renew_date"))
     active = bool(d.get("active", 1))
+    one_time = bool(d.get("one_time", 0))
 
-    monthly, yearly = monthly_yearly(amount, cycle)
-    if periods is None:
-        charges = charges_elapsed(start, cycle, today)
-        total_spent = round(charges * amount, 2)
+    if one_time:
+        # No recurring cost: these must not reach the per-month / per-year or
+        # spent-so-far totals, which is what a zero here guarantees.
+        monthly = yearly = 0.0
+        charges, total_spent = usage_spend(usages or [])
+        nr = None
     else:
-        charges, total_spent = periods_spend(periods, prices or [], cycle, amount, today)
-    # A countdown only makes sense while the subscription is switched on.
-    nr = next_renewal(renew, cycle, today) if active else None
+        monthly, yearly = monthly_yearly(amount, cycle)
+        if periods is None:
+            charges = charges_elapsed(start, cycle, today)
+            total_spent = round(charges * amount, 2)
+        else:
+            charges, total_spent = periods_spend(periods, prices or [], cycle, amount, today)
+        # A countdown only makes sense while the subscription is switched on.
+        nr = next_renewal(renew, cycle, today) if active else None
 
     d["billing_cycle"] = cycle
     d["amount"] = round(amount, 2)
     d["active"] = active
+    d["one_time"] = one_time
     d["monthly_cost"] = monthly
     d["yearly_cost"] = yearly
     d["charges"] = charges
