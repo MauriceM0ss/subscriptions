@@ -544,6 +544,52 @@
       arrow.addEventListener('click', toggle);
       label.addEventListener('click', () => window.selectScope('category', cat.id, cat.name));
     }
+    // ── Games, grouped by store ──────────────────────────────────────────
+    // Rendered as a peer of the categories: a group header that opens the full
+    // library, with one row per store that filters it.
+    const sources = TREE.game_sources || [];
+    if (sources.length) {
+      const gamesLi = document.createElement('li');
+      gamesLi.className = 'tree-cat-item';
+      const open = !collapsed.has('games');
+      const row = document.createElement('div');
+      row.className = 'tree-cat-row';
+      row.dataset.scope = 'games';
+      row.innerHTML =
+        `<span class="tree-arrow">${open ? '▾' : '▶'}</span>` +
+        `<span class="tree-cat-label">Games</span>` +
+        `<span class="tree-count">${(TREE.totals || {}).games || 0}</span>`;
+      gamesLi.appendChild(row);
+
+      const srcUl = document.createElement('div');
+      srcUl.className = 'tree-items-list';
+      if (!open) srcUl.hidden = true;
+      for (const src of sources) {
+        const fl = document.createElement('div');
+        fl.className = 'tree-item-link tree-feed-row';
+        fl.dataset.scope = 'game-source'; fl.dataset.id = src.name;
+        fl.title = `${src.count} game${src.count === 1 ? '' : 's'} · ${fmtMoney(src.spent)}`;
+        fl.innerHTML = `<span class="feed-name">${escHtml(src.name)}</span>` +
+                       `<span class="q-count">${fmtMoney(src.spent)}</span>`;
+        fl.addEventListener('click', () => window.selectScope('game-source', src.name, src.name));
+        srcUl.appendChild(fl);
+      }
+      gamesLi.appendChild(srcUl);
+      ul.appendChild(gamesLi);
+
+      const arrow = row.querySelector('.tree-arrow');
+      arrow.addEventListener('click', e => {
+        e.stopPropagation();
+        const opening = srcUl.hidden;
+        srcUl.hidden = !opening;
+        arrow.textContent = opening ? '▾' : '▶';
+        if (opening) collapsed.delete('games'); else collapsed.add('games');
+        localStorage.setItem(COLLAPSE_KEY, JSON.stringify([...collapsed]));
+      });
+      row.querySelector('.tree-cat-label')
+         .addEventListener('click', () => window.selectScope('games', null, 'All games'));
+    }
+
     treeEl.appendChild(ul);
     highlightActive();
   }
@@ -553,8 +599,10 @@
     document.querySelectorAll('.quick-link, .tree-item-link, .tree-cat-row')
       .forEach(el => el.classList.remove('active'));
     let sel;
-    if (['overview', 'all', 'upcoming'].includes(cur.scope))
+    if (['overview', 'all', 'upcoming', 'gaming'].includes(cur.scope))
       sel = document.querySelector(`.quick-link[data-scope="${cur.scope}"]`);
+    else if (cur.scope === 'games')            // the group header, which has no id
+      sel = document.querySelector('.tree-cat-row[data-scope="games"]');
     else
       sel = document.querySelector(`[data-scope="${cur.scope}"][data-id="${cur.id}"]`);
     if (sel) sel.classList.add('active');

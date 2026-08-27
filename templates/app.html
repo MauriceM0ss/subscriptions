@@ -15,7 +15,8 @@ window.CURRENT = { scope: 'overview', id: null, label: 'Overview' };
 const viewEl = document.getElementById('view');
 
 document.getElementById('toolbar-add').addEventListener('click', () =>
-  window.CURRENT.scope === 'gaming' ? window.openGameForm() : window.openSubForm());
+  ['gaming', 'games', 'game-source'].includes(window.CURRENT.scope)
+    ? window.openGameForm() : window.openSubForm());
 
 // Switch the main view. Called by the sidebar (base.html) and internal links.
 window.selectScope = function (scope, id, label) {
@@ -23,7 +24,8 @@ window.selectScope = function (scope, id, label) {
   document.getElementById('view-title').childNodes[0].nodeValue = label;
   // In the gaming view the primary action is adding a game, not a subscription.
   const addBtn = document.getElementById('toolbar-add');
-  addBtn.textContent = scope === 'gaming' ? '＋ Add game' : '＋ Add subscription';
+  const gameScope = ['gaming', 'games', 'game-source'].includes(scope);
+  addBtn.textContent = gameScope ? '＋ Add game' : '＋ Add subscription';
   highlightActive();
   renderView();
   if (window.closeSidebar) window.closeSidebar();
@@ -38,6 +40,7 @@ async function renderView() {
   try {
     if (c.scope === 'overview') return renderOverview();
     if (c.scope === 'gaming') return renderGaming();
+    if (c.scope === 'games' || c.scope === 'game-source') return renderGameList(c);
     if (c.scope === 'subscription') return renderDetail(c.id);
     return renderList(c);   // all | upcoming | category
   } catch (e) {
@@ -126,8 +129,8 @@ async function renderGaming() {
     viewEl.innerHTML = `<div class="empty-state"><div class="empty-icon">◈</div>
       <div class="empty-title">Nothing tracked yet</div>
       <div class="empty-sub">Add a game you have bought, or file a subscription under Gaming.<br><br>
-        <button class="btn-primary btn-sm" id="empty-add-game">＋ Add your first game</button></div></div>`;
-    document.getElementById('empty-add-game').addEventListener('click', () => window.openGameForm());
+        <button class="btn-primary btn-sm empty-add">＋ Add your first game</button></div></div>`;
+    bindEmptyAdd();
     return;
   }
 
@@ -190,6 +193,50 @@ async function renderGaming() {
     const g = (list.items || []).find(x => String(x.id) === r.dataset.gameId);
     if (g) window.openGameForm(g);
   }));
+}
+
+// ── Game library (all games | one store) ──────────────────────────────────────
+async function renderGameList(c) {
+  const url = c.scope === 'game-source'
+    ? '/api/games/by-source/' + encodeURIComponent(c.id)
+    : '/api/games';
+  const d = await (await fetch(url)).json();
+  window.CURRENCY = d.currency || window.CURRENCY;
+  const items = d.items || [];
+  setSub(`${items.length} game${items.length === 1 ? '' : 's'}`);
+
+  if (!items.length) {
+    viewEl.innerHTML = `<div class="empty-state"><div class="empty-icon">◈</div>
+      <div class="empty-title">No games here yet</div>
+      <div class="empty-sub"><button class="btn-primary btn-sm empty-add">＋ Add a game</button></div></div>`;
+    bindEmptyAdd();
+    return;
+  }
+
+  viewEl.innerHTML =
+    `<div class="list-summary">${fmtMoney(d.spent)}<span class="muted-text">&nbsp;spent across ${items.length} purchase${items.length === 1 ? '' : 's'}</span></div>` +
+    '<div class="sub-list">' + items.map(gameCard).join('') + '</div>';
+  viewEl.querySelectorAll('.sub-card').forEach(el =>
+    el.addEventListener('click', () => {
+      const g = items.find(x => String(x.id) === el.dataset.id);
+      if (g) window.openGameForm(g);
+    }));
+}
+
+function gameCard(g) {
+  const notes = g.notes ? `<span class="meta-sep note-sep">·</span><span class="game-note">${escHtml(g.notes.split(' | ')[0])}</span>` : '';
+  return `<article class="sub-card" data-id="${g.id}">
+    <div class="sub-card-main">
+      <div class="sub-card-head"><span class="sub-card-name">${escHtml(g.name)}</span></div>
+      <div class="sub-card-meta">
+        <span class="cat-pill">${escHtml(g.source || 'Unknown')}</span>
+        <span class="meta-sep">·</span>
+        <span>${g.purchased_on ? fmtDate(g.purchased_on) : 'date unknown'}</span>
+        ${notes}
+      </div>
+    </div>
+    <div class="sub-card-cost"><div class="cost-primary">${fmtMoney(g.price)}</div></div>
+  </article>`;
 }
 
 // ── List views (all | upcoming | category) ────────────────────────────────────
@@ -436,7 +483,11 @@ function emptyState(scope) {
 }
 function bindEmptyAdd() {
   const b = viewEl.querySelector('.empty-add');
-  if (b) b.addEventListener('click', () => window.openSubForm());
+  if (!b) return;
+  // The empty state appears in game views too, where the subscription form
+  // would be the wrong thing to open.
+  const gameScope = ['gaming', 'games', 'game-source'].includes(window.CURRENT.scope);
+  b.addEventListener('click', () => gameScope ? window.openGameForm() : window.openSubForm());
 }
 
 // Boot

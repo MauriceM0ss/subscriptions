@@ -546,6 +546,16 @@ a { color: inherit; text-decoration: none; }
   .up-row.game-row .up-date { display: block; }
 }
 
+/* A game card's note is supporting detail, not a headline — keep it quiet and
+   let it truncate rather than push the price around. */
+.game-note { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+/* Narrow screens wrap the note onto its own line, which leaves the separator
+   dangling at the end of the line above it. */
+@media (max-width: 620px) {
+  .sub-card-meta .note-sep { display: none; }
+  .sub-card-meta .game-note { flex-basis: 100%; }
+}
+
 /* ── One-time usage ticker ───────────────────────────────────────────────── */
 .usage-actions { margin-top: 14px; }
 .usage-row .ph-delta { min-width: 0; }
