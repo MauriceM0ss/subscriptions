@@ -421,3 +421,49 @@ def test_reset_clears_games_and_restores_one_time_category(client):
 def test_export_includes_games(client):
     make_game(client)
     assert len(client.get("/api/export").get_json()["games"]) == 1
+
+
+# ── browsing the game library ──────────────────────────────────────────────
+def test_tree_groups_games_by_source(client):
+    make_game(client, name="BG3", source="Steam", price=59.99)
+    make_game(client, name="Hades", source="GOG", price=19.99)
+    make_game(client, name="Extra", source="Steam", price=10.0)
+    make_game(client, name="Mystery", source="", price=5.0)
+
+    tree = client.get("/api/tree").get_json()
+    assert tree["totals"]["games"] == 4
+    by_name = {s["name"]: s for s in tree["game_sources"]}
+    assert by_name["Steam"] == {"name": "Steam", "count": 2, "spent": 69.99}
+    assert by_name["GOG"]["count"] == 1
+    # A game with no store recorded is grouped rather than dropped.
+    assert by_name["Unknown"]["count"] == 1
+    # Ordered by spend, biggest first.
+    assert [s["name"] for s in tree["game_sources"]][0] == "Steam"
+
+
+def test_games_by_source(client):
+    make_game(client, name="BG3", source="Steam", price=59.99)
+    make_game(client, name="Hades", source="GOG", price=19.99)
+    make_game(client, name="Mystery", source="", price=5.0)
+
+    d = client.get("/api/games/by-source/Steam").get_json()
+    assert [g["name"] for g in d["items"]] == ["BG3"]
+    assert d["spent"] == 59.99
+
+    # "Unknown" is the bucket for games with no store recorded.
+    d = client.get("/api/games/by-source/Unknown").get_json()
+    assert [g["name"] for g in d["items"]] == ["Mystery"]
+
+    d = client.get("/api/games/by-source/Blizzard").get_json()
+    assert d["items"] == [] and d["spent"] == 0
+
+
+def test_games_list_reports_total(client):
+    make_game(client, price=59.99)
+    make_game(client, name="Hades", price=19.99)
+    d = client.get("/api/games").get_json()
+    assert d["spent"] == 79.98 and len(d["items"]) == 2
+
+
+def test_tree_has_no_game_sources_when_empty(client):
+    assert client.get("/api/tree").get_json()["game_sources"] == []

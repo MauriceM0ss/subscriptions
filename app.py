@@ -202,7 +202,8 @@ def api_tree():
     with db() as conn:
         cats = conn.execute("SELECT * FROM categories ORDER BY sort_order, name").fetchall()
         subs = _all_enriched(conn, today)
-        game_count = conn.execute("SELECT COUNT(*) AS n FROM games").fetchone()["n"]
+        game_rows = conn.execute("SELECT source, price FROM games").fetchall()
+        game_count = len(game_rows)
 
     by_cat = {}
     for s in subs:
@@ -232,8 +233,21 @@ def api_tree():
     upcoming = [s for s in subs if s["active"] and not s["one_time"]
                 and s["days_until_renew"] is not None
                 and 0 <= s["days_until_renew"] <= config.UPCOMING_DAYS]
+    # Games grouped by where they were bought, so the sidebar can offer the
+    # same drill-down for a store that it does for a category.
+    by_source = {}
+    for r in game_rows:
+        key = r["source"] or "Unknown"
+        agg = by_source.setdefault(key, {"name": key, "count": 0, "spent": 0.0})
+        agg["count"] += 1
+        agg["spent"] += float(r["price"] or 0)
+    game_sources = sorted(
+        [{**v, "spent": round(v["spent"], 2)} for v in by_source.values()],
+        key=lambda x: -x["spent"])
+
     return jsonify({
         "tree": tree,
+        "game_sources": game_sources,
         "currency": get_currency(),
         "totals": {
             "all": len(subs),
@@ -563,8 +577,25 @@ def api_games_list():
         rows = conn.execute(
             "SELECT * FROM games ORDER BY "
             "CASE WHEN purchased_on = '' THEN 1 ELSE 0 END, purchased_on DESC, id DESC").fetchall()
-    return jsonify({"items": [dict(r) for r in rows],
-                    "currency": get_currency(), "sources": list(config.GAME_SOURCES)})
+    items = [dict(r) for r in rows]
+    return jsonify({"items": items, "currency": get_currency(),
+                    "sources": list(config.GAME_SOURCES),
+                    "spent": round(sum(float(i["price"] or 0) for i in items), 2)})
+
+
+@app.route("/api/games/by-source/<path:source>")
+def api_games_by_source(source):
+    """Games from one store. 'Unknown' collects those with no store recorded."""
+    where, params = ("source = ?", (source,)) if source != "Unknown" else ("source = ''", ())
+    with db() as conn:
+        rows = conn.execute(
+            f"SELECT * FROM games WHERE {where} ORDER BY "
+            "CASE WHEN purchased_on = '' THEN 1 ELSE 0 END, purchased_on DESC, id DESC",
+            params).fetchall()
+    items = [dict(r) for r in rows]
+    return jsonify({"items": items, "currency": get_currency(),
+                    "source": source,
+                    "spent": round(sum(float(i["price"] or 0) for i in items), 2)})
 
 
 @app.route("/api/games", methods=["POST"])
