@@ -1,4 +1,7 @@
 """End-to-end tests for the HTTP API."""
+import io
+import json
+
 from conftest import make_sub
 
 
@@ -605,3 +608,138 @@ def test_overview_upcoming_marks_household(client):
              start_date="2026-01-01", renew_date="2026-09-01")
     up = client.get("/api/overview").get_json()["upcoming"]
     assert [u["household"] for u in up] == [True]
+
+
+# ── Import ────────────────────────────────────────────────────────────────────
+def _export_payload(**over):
+    """A minimal but complete export document, shaped like /api/export output."""
+    d = {
+        "exported_at": "2026-08-27T00:00:00+00:00",
+        "currency": "$",
+        "categories": [
+            {"id": 1, "name": "Media", "sort_order": 0, "one_time": 0, "household": 0},
+            {"id": 6, "name": "Household", "sort_order": 4, "one_time": 0, "household": 1},
+        ],
+        "subscriptions": [{
+            "id": 9, "category_id": 1, "name": "Netflix", "company": "Netflix Inc",
+            "billing_cycle": "monthly", "amount": 15.99, "start_date": "2026-01-01",
+            "renew_date": "2026-09-09", "active": True, "payment_method": "PayPal",
+            "necessity": "Important", "notes": "", "sort_order": 1,
+            "created_at": "2026-01-01T00:00:00+00:00",
+            # derived fields an export carries — must be ignored on the way in
+            "category_name": "Media", "one_time": False, "household": 0,
+            "monthly_cost": 15.99, "yearly_cost": 191.88, "charges": 8,
+            "total_spent": 127.92, "next_renewal": "2026-09-09", "days_until_renew": 13,
+        }],
+        "price_history": [
+            {"id": 1, "sub_id": 9, "amount": 15.99, "billing_cycle": "monthly",
+             "changed_on": "2026-01-01", "note": "created"},
+        ],
+        "activation_periods": [
+            {"id": 1, "sub_id": 9, "started_on": "2026-01-01", "ended_on": None},
+        ],
+        "usage_charges": [],
+        "games": [
+            {"id": 70, "name": "Limbo", "source": "Steam", "price": 21.98,
+             "purchased_on": "2017-06-11", "notes": "bundle",
+             "created_at": "2026-08-27T00:00:00+00:00"},
+        ],
+    }
+    d.update(over)
+    return d
+
+
+def test_import_replaces_all_data(client):
+    make_sub(client, name="OldSub")            # pre-existing data, must vanish
+    r = client.post("/api/import", json=_export_payload())
+    assert r.status_code == 200
+    counts = r.get_json()["imported"]
+    assert counts["subscriptions"] == 1 and counts["categories"] == 2
+    assert counts["games"] == 1
+
+    subs = client.get("/api/subscriptions").get_json()["items"]
+    assert [s["name"] for s in subs] == ["Netflix"]
+    cats = [c["name"] for c in client.get("/api/tree").get_json()["tree"]]
+    assert "OldSub" not in json.dumps(subs)
+    # Imported categories plus the always-present one-time bucket.
+    assert set(cats) == {"Media", "Household", "One Time Subscriptions"}
+    assert client.get("/api/settings").get_json()["currency"] == "$"
+
+
+def test_import_preserves_ids_and_links(client):
+    client.post("/api/import", json=_export_payload())
+    got = client.get("/api/subscriptions/9").get_json()      # id kept from the file
+    assert got["name"] == "Netflix"
+    assert got["category_name"] == "Media"
+    assert len(got["price_history"]) == 1
+    assert len(got["periods"]) == 1
+
+
+def test_import_recomputes_derived_fields(client):
+    """The stored derived numbers in the file are ignored; the app recomputes."""
+    payload = _export_payload()
+    payload["subscriptions"][0]["monthly_cost"] = 999.0
+    payload["subscriptions"][0]["amount"] = 10.0
+    client.post("/api/import", json=payload)
+    got = client.get("/api/subscriptions/9").get_json()
+    assert got["monthly_cost"] == 10.0
+
+
+def test_import_via_file_upload(client):
+    blob = io.BytesIO(json.dumps(_export_payload()).encode("utf-8"))
+    r = client.post("/api/import", data={"file": (blob, "export.json")},
+                    content_type="multipart/form-data")
+    assert r.status_code == 200
+    assert client.get("/api/subscriptions/9").get_json()["name"] == "Netflix"
+
+
+def test_import_rejects_bad_shape(client):
+    assert client.post("/api/import", json={"nope": 1}).status_code == 400
+    assert client.post("/api/import", json=[1, 2, 3]).status_code == 400
+
+
+def test_import_rejects_orphan_category_and_keeps_current_data(client):
+    make_sub(client, name="Keeper")
+    bad = _export_payload()
+    bad["subscriptions"][0]["category_id"] = 999      # no such category in file
+    r = client.post("/api/import", json=bad)
+    assert r.status_code == 400
+    # Rolled back — the pre-existing subscription is still there.
+    names = [s["name"] for s in client.get("/api/subscriptions").get_json()["items"]]
+    assert names == ["Keeper"]
+
+
+def test_import_skips_orphan_child_rows(client):
+    payload = _export_payload()
+    payload["price_history"].append(
+        {"id": 2, "sub_id": 4242, "amount": 1.0, "billing_cycle": "monthly",
+         "changed_on": "2026-01-01", "note": "orphan"})
+    r = client.post("/api/import", json=payload)
+    assert r.status_code == 200
+    assert r.get_json()["imported"]["skipped"] == 1
+    assert len(client.get("/api/subscriptions/9").get_json()["price_history"]) == 1
+
+
+def test_import_empty_categories_seeds_defaults(client):
+    r = client.post("/api/import", json=_export_payload(
+        categories=[], subscriptions=[], price_history=[], activation_periods=[],
+        usage_charges=[], games=[]))
+    assert r.status_code == 200
+    cats = [c["name"] for c in client.get("/api/tree").get_json()["tree"]]
+    assert cats == ["Media", "Productivity", "Gaming", "One Time Subscriptions"]
+
+
+def test_import_round_trips_with_export(client):
+    make_sub(client, name="Spotify", amount=11.99)
+    client.post("/api/games", json={"name": "Celeste", "price": 19.99})
+    original = client.get("/api/export").get_json()
+
+    client.post("/api/reset")
+    r = client.post("/api/import", json=original)
+    assert r.status_code == 200
+
+    back = client.get("/api/export").get_json()
+    assert [s["name"] for s in back["subscriptions"]] == ["Spotify"]
+    assert [g["name"] for g in back["games"]] == ["Celeste"]
+    assert back["subscriptions"][0]["total_spent"] == \
+        original["subscriptions"][0]["total_spent"]

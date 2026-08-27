@@ -236,6 +236,17 @@
             <a class="btn-secondary" href="{{ url_for('api_export') }}">⬇ Export JSON</a>
           </div>
         </div>
+        <div class="settings-section">
+          <h3 class="settings-section-title">Import</h3>
+          <p class="settings-desc">Load a JSON export from another instance. This
+            <strong>replaces</strong> every category, subscription and game currently
+            stored — export first if you want a backup.</p>
+          <div class="import-row">
+            <input type="file" id="import-file" accept="application/json,.json" class="modal-input">
+            <button class="btn-secondary" id="import-go">⬆ Import JSON</button>
+          </div>
+          <span id="import-status" class="settings-status"></span>
+        </div>
         <div class="settings-section settings-section--danger">
           <h3 class="settings-section-title">Reset</h3>
           <p class="settings-desc">Delete every subscription and category, then restore the starter
@@ -933,6 +944,34 @@
   });
   document.getElementById('newcat-name').addEventListener('keydown', e => {
     if (e.key === 'Enter') document.getElementById('newcat-add').click();
+  });
+
+  // Import
+  document.getElementById('import-go').addEventListener('click', async () => {
+    const status = document.getElementById('import-status');
+    const fileInput = document.getElementById('import-file');
+    const file = fileInput.files && fileInput.files[0];
+    if (!file) { status.textContent = 'Choose a JSON file first.'; return; }
+    if (!await confirmDialog({
+      title: 'Replace all data?',
+      message: `Importing "${file.name}" deletes every category, subscription and `
+        + 'game currently stored, then loads the file. This cannot be undone.',
+      confirmLabel: 'Replace everything', danger: true })) return;
+    status.textContent = 'Importing…';
+    const body = new FormData();
+    body.append('file', file);
+    let r, j;
+    try {
+      r = await fetch('/api/import', { method: 'POST', body });
+      j = await r.json();
+    } catch (e) {
+      status.textContent = 'Import failed — could not reach the server.'; return;
+    }
+    if (!r.ok) { status.textContent = j.error || 'Import failed.'; return; }
+    const c = j.imported || {};
+    status.textContent = `Imported ${c.subscriptions || 0} subscriptions, `
+      + `${c.categories || 0} categories, ${c.games || 0} games. Reloading…`;
+    setTimeout(() => location.reload(), 900);
   });
 
   // Reset
