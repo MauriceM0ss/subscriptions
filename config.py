@@ -27,6 +27,12 @@ GAME_SOURCES = ("Steam", "Instant Gaming", "Rockstar", "Bethesda", "Blizzard", "
 # The subscription category whose spend is folded into the Gaming overview.
 GAMING_CATEGORY = "Gaming"
 
+# Categories flagged "household" are recurring bills rather than subscriptions
+# you chose — rent or mortgage, energy, water, internet. They are an order of
+# magnitude larger, so they get their own headline figure instead of burying
+# the subscriptions in a single combined total.
+HOUSEHOLD_CATEGORY_HINT = "Monthly Home Expenses"
+
 # Money shown throughout the UI. Just a display symbol — no conversion happens.
 DEFAULT_CURRENCY = os.environ.get("CURRENCY", "€")   # €
 
