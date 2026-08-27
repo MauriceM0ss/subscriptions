@@ -467,3 +467,141 @@ def test_games_list_reports_total(client):
 
 def test_tree_has_no_game_sources_when_empty(client):
     assert client.get("/api/tree").get_json()["game_sources"] == []
+
+
+# ── household split ────────────────────────────────────────────────────────
+def _make_household_cat(client, name="Monthly Home Expenses"):
+    return client.post("/api/categories", json={"name": name, "household": True}).get_json()["id"]
+
+
+def test_nothing_changes_until_a_category_is_flagged(client):
+    """The split must be invisible until it is asked for."""
+    make_sub(client, amount=10.0)
+    d = client.get("/api/overview").get_json()
+    assert d["household_count"] == 0
+    assert d["household_monthly"] == 0 and d["household_spent"] == 0
+    assert d["combined_monthly"] == d["monthly_total"] == 10.0
+
+
+def test_household_totals_are_separate_from_subscriptions(client):
+    hid = _make_household_cat(client)
+    make_sub(client, name="Netflix", category_id=1, amount=10.0)
+    make_sub(client, name="Mortgage", category_id=hid, amount=1200.0)
+    make_sub(client, name="Energy", category_id=hid, amount=180.0)
+
+    d = client.get("/api/overview").get_json()
+    # The subscription headline is untouched by a 1380/mo household.
+    assert d["monthly_total"] == 10.0
+    assert d["yearly_total"] == 120.0
+    assert d["household_monthly"] == 1380.0
+    assert d["household_yearly"] == 16560.0
+    assert d["household_count"] == 2
+    assert d["combined_monthly"] == 1390.0
+    assert d["combined_yearly"] == 16680.0
+
+
+def test_household_spend_is_reported_apart(client):
+    hid = _make_household_cat(client)
+    make_sub(client, name="Netflix", category_id=1, amount=10.0,
+             start_date="2026-01-01", renew_date="2030-01-01")
+    make_sub(client, name="Energy", category_id=hid, amount=180.0,
+             start_date="2026-01-01", renew_date="2030-01-01")
+    d = client.get("/api/overview").get_json()
+    assert d["total_spent"] > 0 and d["household_spent"] > 0
+    # Household spend must not leak into the subscription figure.
+    assert d["household_spent"] == round(d["total_spent"] * 18, 2)
+
+
+def test_by_category_marks_household_entries(client):
+    hid = _make_household_cat(client)
+    make_sub(client, name="Netflix", category_id=1, amount=10.0)
+    make_sub(client, name="Energy", category_id=hid, amount=180.0)
+    cats = {c["name"]: c for c in client.get("/api/overview").get_json()["by_category"]}
+    assert cats["Media"]["household"] is False
+    assert cats["Monthly Home Expenses"]["household"] is True
+
+
+def test_household_flag_round_trips(client):
+    hid = _make_household_cat(client, "Bills")
+    tree = client.get("/api/tree").get_json()
+    cat = next(c for c in tree["tree"] if c["id"] == hid)
+    assert cat["household"] is True
+    client.put(f"/api/categories/{hid}", json={"name": "Bills", "household": False})
+    tree = client.get("/api/tree").get_json()
+    assert next(c for c in tree["tree"] if c["id"] == hid)["household"] is False
+
+
+def test_tree_totals_exclude_household_from_the_subscription_figure(client):
+    hid = _make_household_cat(client)
+    make_sub(client, name="Netflix", category_id=1, amount=10.0)
+    make_sub(client, name="Energy", category_id=hid, amount=180.0)
+    t = client.get("/api/tree").get_json()["totals"]
+    assert t["monthly_total"] == 10.0
+    assert t["household_monthly"] == 180.0
+
+
+# ── the three overviews ────────────────────────────────────────────────────
+def test_household_overview(client):
+    hid = _make_household_cat(client)
+    make_sub(client, name="Netflix", category_id=1, amount=10.0)
+    make_sub(client, name="Mortgage", category_id=hid, amount=1240.0,
+             start_date="2026-01-01", renew_date="2030-01-01")
+    make_sub(client, name="Energy", category_id=hid, amount=186.0,
+             start_date="2026-01-01", renew_date="2030-01-01")
+
+    d = client.get("/api/household-overview").get_json()
+    assert d["active_count"] == 2 and d["total_count"] == 2
+    assert d["monthly_total"] == 1426.0
+    assert d["yearly_total"] == 17112.0
+    # Ranked biggest first, and the subscription is nowhere in it.
+    assert [b["name"] for b in d["bills"]] == ["Mortgage", "Energy"]
+    assert d["biggest"] == "Mortgage"
+    assert all(b["name"] != "Netflix" for b in d["bills"])
+
+
+def test_household_overview_empty_when_nothing_flagged(client):
+    make_sub(client, amount=10.0)
+    d = client.get("/api/household-overview").get_json()
+    assert d["total_count"] == 0 and d["monthly_total"] == 0
+    assert d["bills"] == [] and d["biggest"] == ""
+
+
+def test_household_overview_keeps_paused_bills_after_active_ones(client):
+    hid = _make_household_cat(client)
+    make_sub(client, name="Energy", category_id=hid, amount=186.0)
+    r = make_sub(client, name="Old contract", category_id=hid, amount=999.0)
+    client.put(f"/api/subscriptions/{r.get_json()['id']}", json={"active": False})
+    d = client.get("/api/household-overview").get_json()
+    assert [b["name"] for b in d["bills"]] == ["Energy", "Old contract"]
+    # A paused bill must not inflate the monthly figure despite its size.
+    assert d["monthly_total"] == 186.0
+    assert d["active_count"] == 1 and d["total_count"] == 2
+
+
+def test_tree_totals_feed_the_new_nav(client):
+    hid = _make_household_cat(client)
+    make_sub(client, name="Netflix", category_id=1, amount=10.0)
+    make_sub(client, name="Energy", category_id=hid, amount=186.0)
+    make_game(client)
+    t = client.get("/api/tree").get_json()["totals"]
+    assert t["subs"] == 1 and t["household_count"] == 1 and t["games"] == 1
+
+
+def test_upcoming_spans_subscriptions_and_household(client):
+    """Renewals are the one view that deliberately covers everything."""
+    hid = _make_household_cat(client)
+    make_sub(client, name="Netflix", category_id=1, amount=10.0,
+             start_date="2026-01-01", renew_date="2026-09-01")
+    make_sub(client, name="Energy", category_id=hid, amount=186.0,
+             start_date="2026-01-01", renew_date="2026-09-01")
+    names = [s["name"] for s in client.get("/api/subscriptions?scope=upcoming").get_json()["items"]]
+    assert set(names) == {"Netflix", "Energy"}
+    assert client.get("/api/tree").get_json()["totals"]["upcoming"] == 2
+
+
+def test_overview_upcoming_marks_household(client):
+    hid = _make_household_cat(client)
+    make_sub(client, name="Energy", category_id=hid, amount=186.0,
+             start_date="2026-01-01", renew_date="2026-09-01")
+    up = client.get("/api/overview").get_json()["upcoming"]
+    assert [u["household"] for u in up] == [True]

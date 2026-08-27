@@ -22,7 +22,8 @@ def init_db():
                 id         INTEGER PRIMARY KEY AUTOINCREMENT,
                 name       TEXT    NOT NULL UNIQUE,
                 sort_order INTEGER NOT NULL DEFAULT 0,
-                one_time   INTEGER NOT NULL DEFAULT 0
+                one_time   INTEGER NOT NULL DEFAULT 0,
+                household  INTEGER NOT NULL DEFAULT 0
             );
             CREATE TABLE IF NOT EXISTS subscriptions (
                 id             INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -129,6 +130,8 @@ def _migrate(conn):
     cat_cols = {r["name"] for r in conn.execute("PRAGMA table_info(categories)")}
     if "one_time" not in cat_cols:
         conn.execute("ALTER TABLE categories ADD COLUMN one_time INTEGER NOT NULL DEFAULT 0")
+    if "household" not in cat_cols:
+        conn.execute("ALTER TABLE categories ADD COLUMN household INTEGER NOT NULL DEFAULT 0")
 
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(subscriptions)")}
     if "payment_method" not in cols:

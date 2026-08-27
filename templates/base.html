@@ -270,7 +270,9 @@
             they always agree.</li>
           <li><strong>Total spent</strong> is estimated from the start date and billing cycle — how much
             this subscription has cost you so far.</li>
-          <li><strong>Overview</strong> (top of the sidebar) totals your active spend and lists renewals
+          <li><strong>Subscriptions</strong>, <strong>Household</strong> and <strong>Games</strong>
+            (top of the sidebar) each total their own kind of spend; <strong>Upcoming renewals</strong>
+            spans all of them and lists renewals
             coming up in the next {{ ' ' }}<span id="help-upcoming-days">30</span> days.</li>
           <li>Subscriptions are grouped by <strong>category</strong> in the sidebar; click one to see its
             details, then Edit or Delete.</li>
@@ -463,11 +465,12 @@
   function renderQuick() {
     const q = document.getElementById('nav-quick');
     const t = TREE.totals || {};
+    // Three overviews, one per kind of spend, then renewals across all of them.
     const links = [
-      { scope: 'overview', icon: '▦', label: 'Overview', count: '' },
-      { scope: 'all', icon: '≣', label: 'All subscriptions', count: t.all || 0 },
+      { scope: 'overview', icon: '▦', label: 'Subscriptions', count: t.subs || 0 },
+      { scope: 'household', icon: '⌂', label: 'Household', count: t.household_count || 0 },
+      { scope: 'gaming', icon: '◈', label: 'Games', count: t.games || 0 },
       { scope: 'upcoming', icon: '↻', label: 'Upcoming renewals', count: t.upcoming || 0 },
-      { scope: 'gaming', icon: '◈', label: 'Gaming', count: t.games || 0 },
     ];
     q.innerHTML = '';
     links.forEach(l => {
@@ -599,7 +602,7 @@
     document.querySelectorAll('.quick-link, .tree-item-link, .tree-cat-row')
       .forEach(el => el.classList.remove('active'));
     let sel;
-    if (['overview', 'all', 'upcoming', 'gaming'].includes(cur.scope))
+    if (['overview', 'household', 'upcoming', 'gaming'].includes(cur.scope))
       sel = document.querySelector(`.quick-link[data-scope="${cur.scope}"]`);
     else if (cur.scope === 'games')            // the group header, which has no id
       sel = document.querySelector('.tree-cat-row[data-scope="games"]');
@@ -611,8 +614,12 @@
 
   function renderStatus() {
     const t = TREE.totals || {};
+    const house = t.household_monthly || 0;
+    // The status bar reports subscriptions, plus household alongside it rather
+    // than folded in — the same split the overview makes.
     document.getElementById('status-text').textContent =
-      `${t.active || 0} active · ${fmtMoney(t.monthly_total)}/mo · ${fmtMoney(t.yearly_total)}/yr`;
+      `${t.active || 0} active · ${fmtMoney(t.monthly_total)}/mo · ${fmtMoney(t.yearly_total)}/yr`
+      + (house ? ` · household ${fmtMoney(house)}/mo` : '');
   }
 
   function syncCurrencySymbols() {
@@ -800,7 +807,7 @@
     await fetch('/api/subscriptions/' + id, { method: 'DELETE' });
     subBackdrop.hidden = true;
     await loadTree();
-    window.selectScope('overview', null, 'Overview');
+    window.selectScope('overview', null, 'Subscriptions');
   });
 
   // ── Settings modal ─────────────────────────────────────────────────────────
@@ -860,10 +867,19 @@
     for (const cat of TREE.tree) {
       const box = document.createElement('div');
       box.className = 'manage-cat';
+      // One-time categories have no recurring cost at all, so the household
+      // split does not apply to them and the toggle would be meaningless.
+      const houseToggle = cat.one_time ? '' :
+        `<label class="manage-flag" title="Count this category as a household bill rather than a subscription">
+           <input type="checkbox" data-act="cat-household" data-id="${cat.id}"
+                  ${cat.household ? 'checked' : ''}>
+           <span>Household</span>
+         </label>`;
       box.innerHTML =
         `<div class="manage-cat-head">
            <span class="name">${escHtml(cat.name)}</span>
            <span class="manage-count">${cat.count} sub${cat.count === 1 ? '' : 's'}</span>
+           ${houseToggle}
            <div class="manage-actions">
              <button class="btn-xs" data-act="cat-rename" data-id="${cat.id}" data-name="${escHtml(cat.name)}">Rename</button>
              <button class="btn-xs btn-danger-xs" data-act="cat-del" data-id="${cat.id}" data-name="${escHtml(cat.name)}">Delete</button>
@@ -877,6 +893,13 @@
   async function onManageAction(e) {
     const b = e.currentTarget, act = b.dataset.act, id = b.dataset.id, name = b.dataset.name;
     const refresh = async () => { await loadTree(); renderManage(); if (window.reloadView) window.reloadView(); };
+    if (act === 'cat-household') {
+      const cat = TREE.tree.find(c => String(c.id) === String(id));
+      await fetch('/api/categories/' + id, { method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: cat.name, household: b.checked }) });
+      return refresh();
+    }
     if (act === 'cat-rename') {
       const v = await promptDialog({ title: 'Rename category', message: 'Enter a new name:',
         defaultValue: name, placeholder: 'New name', confirmLabel: 'Rename' });
@@ -895,7 +918,7 @@
         confirmLabel: 'Delete', danger: true })) return;
       await fetch('/api/categories/' + id, { method: 'DELETE' });
       if (window.CURRENT && String(window.CURRENT.id) === String(id) && window.CURRENT.scope === 'category')
-        window.selectScope('overview', null, 'Overview');
+        window.selectScope('overview', null, 'Subscriptions');
       refresh();
     }
   }

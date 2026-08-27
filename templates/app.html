@@ -3,7 +3,7 @@
 
 {% block content %}
 <div class="view-toolbar">
-  <div class="view-title" id="view-title">Overview<span class="sub" id="view-sub"></span></div>
+  <div class="view-title" id="view-title">Subscriptions<span class="sub" id="view-sub"></span></div>
   <button class="btn-primary btn-sm" id="toolbar-add">＋ Add subscription</button>
 </div>
 <div id="view"></div>
@@ -11,7 +11,7 @@
 
 {% block scripts %}
 <script>
-window.CURRENT = { scope: 'overview', id: null, label: 'Overview' };
+window.CURRENT = { scope: 'overview', id: null, label: 'Subscriptions' };
 const viewEl = document.getElementById('view');
 
 document.getElementById('toolbar-add').addEventListener('click', () =>
@@ -39,6 +39,7 @@ async function renderView() {
   viewEl.innerHTML = '<div class="view-loading">Loading…</div>';
   try {
     if (c.scope === 'overview') return renderOverview();
+    if (c.scope === 'household') return renderHousehold();
     if (c.scope === 'gaming') return renderGaming();
     if (c.scope === 'games' || c.scope === 'game-source') return renderGameList(c);
     if (c.scope === 'subscription') return renderDetail(c.id);
@@ -50,11 +51,44 @@ async function renderView() {
 
 function setSub(text) { document.getElementById('view-sub').textContent = text || ''; }
 
+// Horizontal bars scaled to the largest value in their own list, so a group of
+// small figures stays readable instead of being flattened by an outlier.
+function barList(rows, unit = '/mo', key = 'monthly') {
+  if (!rows.length) return '';
+  const max = Math.max(1, ...rows.map(r => r[key]));
+  return rows.map(r => `<div class="bar-row">
+      <span class="bar-label">${escHtml(r.name || r.year)}</span>
+      <span class="bar-track"><span class="bar-fill" style="width:${Math.round((r[key] / max) * 100)}%"></span></span>
+      <span class="bar-val">${fmtMoney(r[key])}<span class="muted-text">${unit}</span></span>
+    </div>`).join('');
+}
+
+function tileGrid(tiles) {
+  return `<div class="stat-grid">${tiles.map(t => `<div class="stat-tile">
+      <div class="stat-label">${t.label}</div>
+      <div class="stat-value">${t.value}</div>
+      <div class="stat-hint">${t.hint}</div>
+    </div>`).join('')}</div>`;
+}
+
+function upcomingRows(items) {
+  if (!items.length) return '<div class="muted-text" style="padding:8px 2px">No upcoming renewals.</div>';
+  return items.map(s => `
+    <div class="up-row ${renewClass(s.days_until_renew)}" data-id="${s.id}">
+      <span class="up-when">${renewLabel(s.days_until_renew)}</span>
+      <span class="up-name">${escHtml(s.name)}${s.category_name ? ` <span class="muted-text">· ${escHtml(s.category_name)}</span>` : ''}</span>
+      <span class="up-date">${fmtDate(s.next_renewal)}</span>
+      <span class="up-amt">${fmtMoney(s.amount)}<span class="muted-text">/${s.billing_cycle === 'yearly' ? 'yr' : 'mo'}</span></span>
+    </div>`).join('');
+}
+
 // ── Overview dashboard ────────────────────────────────────────────────────────
 async function renderOverview() {
   const d = await (await fetch('/api/overview')).json();
   window.CURRENCY = d.currency || window.CURRENCY;
-  setSub(`${d.active_count} active of ${d.total_count}`);
+  const subsActive = d.active_count - d.household_count;
+  const subsTotal = d.total_count - d.household_count;
+  setSub(`${subsActive} active of ${subsTotal}`);
 
   if (!d.total_count) {
     viewEl.innerHTML = emptyState('overview');
@@ -62,55 +96,89 @@ async function renderOverview() {
     return;
   }
 
+  // Subscriptions only — household has its own view, games have theirs.
   const tiles = [
     { label: 'Per month', value: fmtMoney(d.monthly_total), hint: 'active subscriptions' },
     { label: 'Per year', value: fmtMoney(d.yearly_total), hint: 'active subscriptions' },
-    { label: 'Active', value: d.active_count, hint: `${d.total_count} total` },
+    { label: 'Active', value: subsActive, hint: `${subsTotal} total` },
     { label: 'Spent so far', value: fmtMoney(d.total_spent),
-      hint: d.one_time_count ? 'recurring only, estimated' : 'all subscriptions, estimated' },
+      hint: d.household_count ? 'subscriptions only, estimated' : 'all subscriptions, estimated' },
   ];
-  // Kept out of "Spent so far" on purpose, but shown so the money is not
-  // invisible — one-time spend is real, it is just not a commitment.
   if (d.one_time_count) {
     tiles.push({ label: 'One-time', value: fmtMoney(d.one_time_spent),
                  hint: `${d.one_time_charges} month${d.one_time_charges === 1 ? '' : 's'} used` });
   }
 
-  const upcoming = d.upcoming.length ? d.upcoming.map(s => `
-    <div class="up-row ${renewClass(s.days_until_renew)}" data-id="${s.id}">
-      <span class="up-when">${renewLabel(s.days_until_renew)}</span>
-      <span class="up-name">${escHtml(s.name)}${s.category_name ? ` <span class="muted-text">· ${escHtml(s.category_name)}</span>` : ''}</span>
-      <span class="up-date">${fmtDate(s.next_renewal)}</span>
-      <span class="up-amt">${fmtMoney(s.amount)}<span class="muted-text">/${s.billing_cycle === 'yearly' ? 'yr' : 'mo'}</span></span>
-    </div>`).join('') : '<div class="muted-text" style="padding:8px 2px">No upcoming renewals.</div>';
+  // Household renewals belong to the household view, not this one.
+  const upcoming = upcomingRows(d.upcoming.filter(s => !s.household));
 
-  const byCat = d.by_category.length ? d.by_category.map(c => {
-    const pct = d.monthly_total ? Math.round((c.monthly / d.monthly_total) * 100) : 0;
-    return `<div class="bar-row">
-        <span class="bar-label">${escHtml(c.name)}</span>
-        <span class="bar-track"><span class="bar-fill" style="width:${pct}%"></span></span>
-        <span class="bar-val">${fmtMoney(c.monthly)}<span class="muted-text">/mo</span></span>
-      </div>`;
-  }).join('') : '';
+  const subCats = d.by_category.filter(c => !c.household);
+  const byCat = barList(subCats);
 
-  viewEl.innerHTML = `
-    <div class="stat-grid">
-      ${tiles.map(t => `<div class="stat-tile">
-        <div class="stat-label">${t.label}</div>
-        <div class="stat-value">${t.value}</div>
-        <div class="stat-hint">${t.hint}</div>
-      </div>`).join('')}
-    </div>
-    <div class="overview-cols">
-      <section class="panel">
-        <h3 class="panel-title">Upcoming renewals</h3>
-        <div class="up-list">${upcoming}</div>
-      </section>
-      ${byCat ? `<section class="panel">
-        <h3 class="panel-title">Monthly spend by category</h3>
-        <div class="bar-list">${byCat}</div>
-      </section>` : ''}
-    </div>`;
+  // Renewals sit at the bottom of every overview: they are a reminder, not the
+  // headline the page is answering.
+  viewEl.innerHTML = tileGrid(tiles) + `<div class="overview-stack">` +
+    (byCat ? `<section class="panel">
+      <h3 class="panel-title">Monthly spend by category</h3>
+      <div class="bar-list">${byCat}</div>
+    </section>` : '') +
+    `<section class="panel">
+      <h3 class="panel-title">Upcoming renewals</h3>
+      <div class="up-list">${upcoming}</div>
+    </section></div>`;
+
+  viewEl.querySelectorAll('.up-row').forEach(r =>
+    r.addEventListener('click', () => window.selectScope('subscription', Number(r.dataset.id), '')));
+}
+
+// ── Household overview ────────────────────────────────────────────────────────
+// The fixed cost of running the home: every bill in a category flagged
+// household. Ranked biggest-first, because with bills of this size the
+// ordering is the useful view rather than the renewal dates.
+async function renderHousehold() {
+  const d = await (await fetch('/api/household-overview')).json();
+  window.CURRENCY = d.currency || window.CURRENCY;
+  setSub(`${d.active_count} bill${d.active_count === 1 ? '' : 's'}` +
+         (d.total_count > d.active_count ? ` · ${d.total_count - d.active_count} paused` : ''));
+
+  if (!d.total_count) {
+    viewEl.innerHTML = `<div class="empty-state"><div class="empty-icon">⌂</div>
+      <div class="empty-title">No household bills yet</div>
+      <div class="empty-sub">Tick <strong>Household</strong> next to a category in ⚙ Settings,
+        then add the bills that come off your account each month.<br><br>
+        <button class="btn-primary btn-sm empty-add">＋ Add a bill</button></div></div>`;
+    bindEmptyAdd();
+    return;
+  }
+
+  const tiles = [
+    { label: 'Per month', value: fmtMoney(d.monthly_total), hint: `${d.active_count} active bill${d.active_count === 1 ? '' : 's'}` },
+    { label: 'Per year', value: fmtMoney(d.yearly_total), hint: 'at current amounts' },
+    { label: 'Biggest', value: fmtMoney(Math.max(0, ...d.bills.filter(b => b.active).map(b => b.monthly_cost))),
+      hint: d.biggest || '—' },
+    { label: 'Paid so far', value: fmtMoney(d.total_spent), hint: 'estimated' },
+  ];
+
+  const rows = d.bills.map(b => `
+    <div class="up-row bill-row${b.active ? '' : ' is-inactive'}" data-id="${b.id}">
+      <span class="up-name">${escHtml(b.name)}${b.category_name ? ` <span class="muted-text">· ${escHtml(b.category_name)}</span>` : ''}</span>
+      <span class="up-date">${b.active ? (b.billing_cycle === 'yearly' ? `${fmtMoney(b.amount)}/yr` : '') : 'paused'}</span>
+      <span class="up-amt">${fmtMoney(b.monthly_cost)}<span class="muted-text">/mo</span></span>
+    </div>`).join('');
+
+  viewEl.innerHTML = tileGrid(tiles) + `<div class="overview-stack">` +
+    `<section class="panel">
+       <h3 class="panel-title">Bills, largest first</h3>
+       <div class="up-list">${rows}</div>
+     </section>` +
+    (d.by_category.length > 1 ? `<section class="panel">
+       <h3 class="panel-title">Monthly spend by category</h3>
+       <div class="bar-list">${barList(d.by_category)}</div>
+     </section>` : '') +
+    `<section class="panel">
+       <h3 class="panel-title">Upcoming renewals</h3>
+       <div class="up-list">${upcomingRows(d.upcoming)}</div>
+     </section></div>`;
 
   viewEl.querySelectorAll('.up-row').forEach(r =>
     r.addEventListener('click', () => window.selectScope('subscription', Number(r.dataset.id), '')));
@@ -462,7 +530,7 @@ async function renderDetail(id) {
       message: `Delete "${s.name}"? This can't be undone.`, confirmLabel: 'Delete', danger: true })) return;
     await fetch('/api/subscriptions/' + s.id, { method: 'DELETE' });
     await window.loadTree();
-    window.selectScope('overview', null, 'Overview');
+    window.selectScope('overview', null, 'Subscriptions');
   });
 }
 
@@ -491,6 +559,6 @@ function bindEmptyAdd() {
 }
 
 // Boot
-loadTree().then(() => selectScope('overview', null, 'Overview'));
+loadTree().then(() => selectScope('overview', null, 'Subscriptions'));
 </script>
 {% endblock %}

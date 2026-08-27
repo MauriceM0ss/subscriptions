@@ -137,7 +137,8 @@ def _periods_prices(conn):
 
 def _all_enriched(conn, today, where="", params=()):
     rows = conn.execute(
-        "SELECT sub.*, c.name AS category_name, c.one_time AS one_time FROM subscriptions sub "
+        "SELECT sub.*, c.name AS category_name, c.one_time AS one_time, "
+        "c.household AS household FROM subscriptions sub "
         "LEFT JOIN categories c ON c.id = sub.category_id "
         + where + " ORDER BY sub.sort_order, sub.name COLLATE NOCASE", params).fetchall()
     periods, prices, usages = _periods_prices(conn)
@@ -210,7 +211,8 @@ def api_tree():
         by_cat.setdefault(s["category_id"], []).append({
             "id": s["id"], "name": s["name"],
             "category_id": s["category_id"], "active": s["active"],
-            "one_time": s["one_time"], "total_spent": s["total_spent"],
+            "one_time": s["one_time"], "household": s["household"],
+            "total_spent": s["total_spent"],
             "monthly_cost": s["monthly_cost"], "days_until_renew": s["days_until_renew"],
         })
     tree = []
@@ -219,7 +221,7 @@ def api_tree():
         one_time = bool(c["one_time"])
         tree.append({
             "id": c["id"], "name": c["name"], "subs": csubs, "count": len(csubs),
-            "one_time": one_time,
+            "one_time": one_time, "household": bool(c["household"]),
             # A one-time category has no monthly commitment; show what it has
             # actually cost instead, so the row is not a permanent 0.00/mo.
             "monthly": 0 if one_time else round(
@@ -252,9 +254,15 @@ def api_tree():
         "totals": {
             "all": len(subs),
             "active": len(active),
+            "subs": len([s for s in subs if not s["household"] and not s["one_time"]]),
+            "household_count": len([s for s in subs if s["household"]]),
             "upcoming": len(upcoming),
-            "monthly_total": round(sum(s["monthly_cost"] for s in active), 2),
-            "yearly_total": round(sum(s["yearly_cost"] for s in active), 2),
+            "monthly_total": round(sum(s["monthly_cost"] for s in active
+                                       if not s["household"]), 2),
+            "yearly_total": round(sum(s["yearly_cost"] for s in active
+                                      if not s["household"]), 2),
+            "household_monthly": round(sum(s["monthly_cost"] for s in active
+                                           if s["household"]), 2),
             "games": game_count,
         },
     })
@@ -272,30 +280,47 @@ def api_overview():
     one_time = [s for s in subs if s["one_time"]]
     active = [s for s in recurring if s["active"]]
 
+    # Household bills dwarf discretionary subscriptions, so they are totalled
+    # separately rather than swallowing them in one figure. With nothing
+    # flagged household, every household_* value is 0 and the subscription
+    # figures are exactly what they always were.
+    house_active = [s for s in active if s["household"]]
+    subs_active = [s for s in active if not s["household"]]
+
     by_cat = {}
     for s in active:
         key = s.get("category_name") or "Uncategorized"
-        by_cat[key] = round(by_cat.get(key, 0) + s["monthly_cost"], 2)
+        entry = by_cat.setdefault(key, {"name": key, "monthly": 0.0,
+                                        "household": bool(s["household"])})
+        entry["monthly"] = round(entry["monthly"] + s["monthly_cost"], 2)
 
     upcoming = sorted(
         [s for s in active if s["days_until_renew"] is not None],
         key=lambda s: s["days_until_renew"])[:12]
     return jsonify({
         "currency": get_currency(),
-        "monthly_total": round(sum(s["monthly_cost"] for s in active), 2),
-        "yearly_total": round(sum(s["yearly_cost"] for s in active), 2),
-        "total_spent": round(sum(s["total_spent"] for s in recurring), 2),
+        # monthly_total / yearly_total / total_spent stay subscription-only, so
+        # the headline keeps answering the question it always answered.
+        "monthly_total": round(sum(s["monthly_cost"] for s in subs_active), 2),
+        "yearly_total": round(sum(s["yearly_cost"] for s in subs_active), 2),
+        "total_spent": round(sum(s["total_spent"] for s in recurring
+                                 if not s["household"]), 2),
+        "household_monthly": round(sum(s["monthly_cost"] for s in house_active), 2),
+        "household_yearly": round(sum(s["yearly_cost"] for s in house_active), 2),
+        "household_spent": round(sum(s["total_spent"] for s in recurring
+                                     if s["household"]), 2),
+        "household_count": len(house_active),
+        "combined_monthly": round(sum(s["monthly_cost"] for s in active), 2),
+        "combined_yearly": round(sum(s["yearly_cost"] for s in active), 2),
         "one_time_spent": round(sum(s["total_spent"] for s in one_time), 2),
         "one_time_charges": sum(s["charges"] for s in one_time),
         "one_time_count": len(one_time),
         "active_count": len(active),
         "total_count": len(subs),
-        "by_category": sorted(
-            [{"name": k, "monthly": v} for k, v in by_cat.items()],
-            key=lambda x: -x["monthly"]),
+        "by_category": sorted(by_cat.values(), key=lambda x: -x["monthly"]),
         "upcoming": [{
             "id": s["id"], "name": s["name"],
-            "category_name": s.get("category_name"),
+            "category_name": s.get("category_name"), "household": s["household"],
             "amount": s["amount"], "billing_cycle": s["billing_cycle"],
             "next_renewal": s["next_renewal"], "days_until_renew": s["days_until_renew"],
         } for s in upcoming],
@@ -324,7 +349,8 @@ def api_subs_list():
 def api_sub_get(sid):
     with db() as conn:
         r = conn.execute(
-            "SELECT sub.*, c.name AS category_name, c.one_time AS one_time FROM subscriptions sub "
+            "SELECT sub.*, c.name AS category_name, c.one_time AS one_time, "
+            "c.household AS household FROM subscriptions sub "
             "LEFT JOIN categories c ON c.id = sub.category_id WHERE sub.id=?", (sid,)).fetchone()
         if not r:
             return jsonify({"error": "Subscription not found."}), 404
@@ -482,14 +508,17 @@ def api_category_create():
     if not name:
         return jsonify({"error": "Name required."}), 400
     one_time = 1 if payload.get("one_time") else 0
+    household = 1 if payload.get("household") else 0
     with db() as conn:
         try:
             cur = conn.execute(
-                "INSERT INTO categories (name, sort_order, one_time) VALUES "
-                "(?, (SELECT COALESCE(MAX(sort_order),0)+1 FROM categories), ?)", (name, one_time))
+                "INSERT INTO categories (name, sort_order, one_time, household) VALUES "
+                "(?, (SELECT COALESCE(MAX(sort_order),0)+1 FROM categories), ?, ?)",
+                (name, one_time, household))
         except sqlite3.IntegrityError:
             return jsonify({"error": "That category already exists."}), 400
-    return jsonify({"id": cur.lastrowid, "name": name, "one_time": bool(one_time)})
+    return jsonify({"id": cur.lastrowid, "name": name,
+                    "one_time": bool(one_time), "household": bool(household)})
 
 
 @app.route("/api/categories/<int:cid>", methods=["PUT"])
@@ -506,6 +535,9 @@ def api_category_update(cid):
         if "one_time" in payload:
             conn.execute("UPDATE categories SET one_time=? WHERE id=?",
                          (1 if payload["one_time"] else 0, cid))
+        if "household" in payload:
+            conn.execute("UPDATE categories SET household=? WHERE id=?",
+                         (1 if payload["household"] else 0, cid))
     return jsonify({"ok": True})
 
 
@@ -679,6 +711,56 @@ def api_gaming_overview():
         "subs": [{"id": s["id"], "name": s["name"], "one_time": s["one_time"],
                   "monthly_cost": s["monthly_cost"], "total_spent": s["total_spent"],
                   "active": s["active"]} for s in subs],
+    })
+
+
+def _bill(b):
+    """The subset of an enriched row the household view needs."""
+    return {
+        "id": b["id"], "name": b["name"], "category_name": b.get("category_name"),
+        "amount": b["amount"], "billing_cycle": b["billing_cycle"],
+        "monthly_cost": b["monthly_cost"], "yearly_cost": b["yearly_cost"],
+        "total_spent": b["total_spent"], "active": b["active"],
+        "next_renewal": b["next_renewal"], "days_until_renew": b["days_until_renew"],
+    }
+
+
+@app.route("/api/household-overview")
+def api_household_overview():
+    """What the home costs: every bill in a category flagged household."""
+    today = config.today()
+    with db() as conn:
+        bills = [s for s in _all_enriched(conn, today) if s["household"]]
+
+    active = [b for b in bills if b["active"]]
+    by_cat = {}
+    for b in active:
+        key = b.get("category_name") or "Uncategorized"
+        by_cat[key] = round(by_cat.get(key, 0) + b["monthly_cost"], 2)
+
+    upcoming = sorted([b for b in active if b["days_until_renew"] is not None],
+                      key=lambda b: b["days_until_renew"])[:12]
+    # Biggest bills first: with household costs the ranking is the useful view,
+    # not the renewal order.
+    ranked = sorted(active, key=lambda b: -b["monthly_cost"])
+    return jsonify({
+        "currency": get_currency(),
+        "monthly_total": round(sum(b["monthly_cost"] for b in active), 2),
+        "yearly_total": round(sum(b["yearly_cost"] for b in active), 2),
+        "total_spent": round(sum(b["total_spent"] for b in bills), 2),
+        "active_count": len(active),
+        "total_count": len(bills),
+        "biggest": ranked[0]["name"] if ranked else "",
+        "by_category": sorted([{"name": k, "monthly": v} for k, v in by_cat.items()],
+                              key=lambda x: -x["monthly"]),
+        # Active bills biggest-first, then the paused ones after them.
+        "bills": [_bill(b) for b in ranked] +
+                 [_bill(b) for b in bills if not b["active"]],
+        "upcoming": [{
+            "id": b["id"], "name": b["name"], "category_name": b.get("category_name"),
+            "amount": b["amount"], "billing_cycle": b["billing_cycle"],
+            "next_renewal": b["next_renewal"], "days_until_renew": b["days_until_renew"],
+        } for b in upcoming],
     })
 
 
